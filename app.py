@@ -3,6 +3,7 @@ from notion_client import Client as NotionClient
 import requests
 import time
 import os
+import xlsxwriter
 
 app = Flask(__name__)
 
