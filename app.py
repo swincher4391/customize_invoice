@@ -81,5 +81,105 @@ def handle_webhook():
 
     return jsonify({"message": "Success", "license_key": license_key}), 200
 
+# Path to your pre-built XLSM template with VBA
+TEMPLATE_PATH = "templates/invoice-watermarked.xlsm"
+
+@app.route('/preview_webhook', methods=['POST'])
+def handle_preview_request():
+    """Process incoming preview requests from Tally.so form"""
+    data = request.json
+    
+    # Extract form data
+    business_name = data.get('business_name', 'Your Business')
+    template_type = data.get('template_type', 'invoice')
+    email = data.get('email')
+    
+    # Create a temporary file for the customized template
+    with tempfile.NamedTemporaryFile(suffix='.xlsm', delete=False) as temp_file:
+        temp_path = temp_file.name
+    
+    # Generate preview template
+    output_path = generate_preview_template(
+        business_name=business_name,
+        output_path=temp_path
+    )
+    
+    # In a real application, you'd now:
+    # 1. Email the template to the user
+    # 2. Or upload it to cloud storage and generate a download link
+    # 3. Log the activity in your database
+    
+    # For demo purposes, just send the file directly
+    return send_file(output_path, as_attachment=True, 
+                    download_name=f"{business_name}_invoice_preview.xlsm")
+
+@app.route('/purchase_webhook', methods=['POST'])
+def handle_purchase():
+    """Process incoming Etsy purchase notifications"""
+    data = request.json
+    
+    # Extract order details
+    order_id = data.get('order_id')
+    customer_email = data.get('buyer_email')
+    license_key = f"EXCEL-{order_id}-{datetime.now().strftime('%Y%m%d')}"
+    
+    # Create a temporary file for the licensed template
+    with tempfile.NamedTemporaryFile(suffix='.xlsm', delete=False) as temp_file:
+        temp_path = temp_file.name
+    
+    # Generate licensed template
+    output_path = generate_licensed_template(
+        business_name="Customer Business", 
+        output_path=temp_path, 
+        license_key=license_key
+    )
+    
+    # In a real application, you'd now:
+    # 1. Email the template to the customer
+    # 2. Store the license key in your database
+    # 3. Log the purchase activity
+    
+    return jsonify({
+        "status": "success",
+        "license_key": license_key
+    })
+
+def generate_preview_template(business_name, output_path):
+    """Creates a watermarked preview version of the invoice template"""
+    # Load the pre-built template (with VBA already included)
+    wb = openpyxl.load_workbook(TEMPLATE_PATH, keep_vba=True)
+    ws = wb["Invoice"]
+    
+    # Update business info
+    ws['A1'] = business_name
+    
+    # Ensure watermarks are visible (license is inactive)
+    license_sheet = wb["License"]
+    license_sheet['B2'] = "Inactive"
+    
+    # Save the customized template
+    wb.save(output_path)
+    
+    return output_path
+
+def generate_licensed_template(business_name, output_path, license_key):
+    """Creates a licensed version of the invoice template"""
+    # Load the pre-built template (with VBA already included)
+    wb = openpyxl.load_workbook(TEMPLATE_PATH, keep_vba=True)
+    ws = wb["Invoice"]
+    
+    # Update business info
+    ws['A1'] = business_name
+    
+    # Update license information
+    license_sheet = wb["License"]
+    license_sheet['B1'] = license_key
+    license_sheet['B2'] = "Active"  # Set to active immediately
+    
+    # Save the customized template
+    wb.save(output_path)
+    
+    return output_path
+    
 if __name__ == "__main__":
     app.run(debug=True)
