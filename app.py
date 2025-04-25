@@ -100,6 +100,7 @@ def handle_preview_request():
     output_path = generate_preview_template(
         business_name=business_name,
         output_path=temp_path,
+        logo="logo.png",
         type="invoice"
     )
     
@@ -143,7 +144,7 @@ def handle_purchase():
         "license_key": license_key
     })
 
-def generate_preview_template(business_name, logo=None, output_path,type="invoice"):
+def generate_preview_template(business_name, output_path, logo=None, type="invoice"):
     if type == "invoice":
         TEMPLATE_PATH = "invoice-watermarked.xlsm"
     else:
