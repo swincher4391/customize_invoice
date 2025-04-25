@@ -12,7 +12,7 @@ DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 ETSY_API_KEY = os.getenv("ETSY_API_KEY")
 ETSY_ACCESS_TOKEN = os.getenv("ETSY_ACCESS_TOKEN")
 SHOP_ID = os.getenv("ETSY_SHOP_ID")
-
+TEMPLATE_PATH=""
 notion = NotionClient(auth=NOTION_TOKEN)
 
 # === LICENSE KEY GENERATION ===
@@ -81,9 +81,6 @@ def handle_webhook():
 
     return jsonify({"message": "Success", "license_key": license_key}), 200
 
-# Path to your pre-built XLSM template with VBA
-TEMPLATE_PATH = "templates/invoice-watermarked.xlsm"
-
 @app.route('/preview_webhook', methods=['POST'])
 def handle_preview_request():
     """Process incoming preview requests from Tally.so form"""
@@ -144,7 +141,11 @@ def handle_purchase():
         "license_key": license_key
     })
 
-def generate_preview_template(business_name, output_path):
+def generate_preview_template(business_name, output_path,type="invoice"):
+    if type == "invoice":
+        TEMPLATE_PATH = "invoice-watermarked.xlsm"
+    else:
+        TEMPLATE_PATH = "invoice-watermarked.xlsm"
     """Creates a watermarked preview version of the invoice template"""
     # Load the pre-built template (with VBA already included)
     wb = openpyxl.load_workbook(TEMPLATE_PATH, keep_vba=True)
@@ -162,7 +163,11 @@ def generate_preview_template(business_name, output_path):
     
     return output_path
 
-def generate_licensed_template(business_name, output_path, license_key):
+def generate_licensed_template(business_name, output_path, license_key,type="invoice"):
+    if type == "invoice":
+        TEMPLATE_PATH = "invoice-watermarked.xlsm"
+    else:
+        TEMPLATE_PATH = "invoice-watermarked.xlsm"
     """Creates a licensed version of the invoice template"""
     # Load the pre-built template (with VBA already included)
     wb = openpyxl.load_workbook(TEMPLATE_PATH, keep_vba=True)
