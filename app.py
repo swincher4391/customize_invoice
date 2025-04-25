@@ -98,7 +98,8 @@ def handle_preview_request():
     # Generate preview template
     output_path = generate_preview_template(
         business_name=business_name,
-        output_path=temp_path
+        output_path=temp_path,
+        type="invoice"
     )
     
     # In a real application, you'd now:
@@ -150,13 +151,17 @@ def generate_preview_template(business_name, logo=None, output_path,type="invoic
     # Load the pre-built template (with VBA already included)
     wb = openpyxl.load_workbook(TEMPLATE_PATH, keep_vba=True)
     ws = wb["Invoice"]
+
+    #update logo
+    workbook = xlsxwriter.Workbook(TEMPLATE_PATH)
+    worksheet.insert_image('A1', '/tmp/logo.png')
     
     # Update business info
-    ws['A1'] = business_name
+    ws['A2'] = business_name
     
     # Ensure watermarks are visible (license is inactive)
     license_sheet = wb["License"]
-    license_sheet['B2'] = "Inactive"
+    license_sheet['B3'] = "Inactive"
     
     # Save the customized template
     wb.save(output_path)
@@ -168,18 +173,23 @@ def generate_licensed_template(business_name, output_path, license_key,type="inv
         TEMPLATE_PATH = "invoice-watermarked.xlsm"
     else:
         TEMPLATE_PATH = "invoice-watermarked.xlsm"
+        
     """Creates a licensed version of the invoice template"""
     # Load the pre-built template (with VBA already included)
     wb = openpyxl.load_workbook(TEMPLATE_PATH, keep_vba=True)
     ws = wb["Invoice"]
     
+    #update logo
+    workbook = xlsxwriter.Workbook(TEMPLATE_PATH)
+    worksheet.insert_image('A1', '/tmp/logo.png')
+    
     # Update business info
-    ws['A1'] = business_name
+    ws['A2'] = business_name
     
     # Update license information
     license_sheet = wb["License"]
-    license_sheet['B1'] = license_key
-    license_sheet['B2'] = "Active"  # Set to active immediately
+    license_sheet['B2'] = license_key
+    license_sheet['B3'] = "Active"  # Set to active immediately
     
     # Save the customized template
     wb.save(output_path)
