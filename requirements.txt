@@ -2,3 +2,6 @@ flask
 notion-client
 requests
 gunicorn
+openpyxl
+pillow
+notion-client
