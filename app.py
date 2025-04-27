@@ -10,6 +10,8 @@ from openpyxl.styles import Font, Alignment
 import smtplib
 from email.message import EmailMessage
 from PIL import Image
+import pdfkit
+from xlsx2html import xlsx2html
 
 app = Flask(__name__)
 
@@ -20,8 +22,8 @@ TEMPLATE_PATH = "invoice-watermarked.xlsx"
 notion = NotionClient(auth=NOTION_TOKEN)
 
 # === UTILITIES ===
-def send_email(recipient_email, subject, body, attachment_path):
-    """Send an email with the given attachment."""
+def send_email(recipient_email, subject, body, attachment_paths):
+    """Send an email with one or multiple attachments."""
     smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     smtp_port = int(os.getenv('SMTP_PORT', 587))
     smtp_user = os.getenv('SMTP_USER')
@@ -33,16 +35,29 @@ def send_email(recipient_email, subject, body, attachment_path):
     msg['To'] = recipient_email
     msg.set_content(body)
 
-    with open(attachment_path, 'rb') as f:
-        file_data = f.read()
-        file_name = os.path.basename(attachment_path)
+    for attachment_path in attachment_paths:
+        with open(attachment_path, 'rb') as f:
+            file_data = f.read()
+            file_name = os.path.basename(attachment_path)
 
-    msg.add_attachment(file_data, maintype='application', subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename=file_name)
+        # Decide attachment MIME type
+        if attachment_path.endswith('.xlsx'):
+            maintype = 'application'
+            subtype = 'vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        elif attachment_path.endswith('.pdf'):
+            maintype = 'application'
+            subtype = 'pdf'
+        else:
+            maintype = 'application'
+            subtype = 'octet-stream'
+
+        msg.add_attachment(file_data, maintype=maintype, subtype=subtype, filename=file_name)
 
     with smtplib.SMTP(smtp_server, smtp_port) as server:
         server.starttls()
         server.login(smtp_user, smtp_pass)
         server.send_message(msg)
+
 
 def remove_background(image_file, tolerance=30):
     """Remove background color based on pixel (0,0) and make transparent."""
@@ -174,18 +189,30 @@ def handle_preview_request():
         wb.save(tmp.name)
         tmp_path = tmp.name
 
+    # Convert .xlsx to .html
+    html_file_path = tmp_path.replace(".xlsx", ".html")
+    with open(html_file_path, "w") as f:
+        xlsx2html(tmp_path, f)
+    
+    # Convert .html to .pdf
+    pdf_file_path = tmp_path.replace(".xlsx", ".pdf")
+    pdfkit.from_file(html_file_path, pdf_file_path)
+
+==
     # Send email (even if email fails, still return file)
+# Send email (even if email fails, still return file)
     try:
         send_email(
             recipient_email=email,
-            subject="Your Custom Invoice Preview is Ready!",
-            body=f"Hello {business_name},\n\nThank you for your order! Please find your customized invoice attached.\n\nBest regards,\nSwincher Creative",
-            attachment_path=tmp_path
+            subject="Your Custom Invoice is Ready!",
+            body="Please find attached both the Excel and PDF versions.",
+            attachment_paths=[tmp_path, pdf_file_path]  # <-- multiple attachments!
         )
     except Exception as e:
         print(f"⚠️ Failed to send email: {e}")
 
-    return send_file(tmp_path, as_attachment=True, download_name=f"{business_name}_invoice_preview.xlsx")
+
+    return 
 
 if __name__ == "__main__":
     app.run(debug=True)
