@@ -221,6 +221,8 @@ def handle_preview_request():
         logo_bytes=logo_bytes.getvalue(),   # <-- logo in bytes
         output_pdf_path=final_pdf_path
         )
+    catch:
+        print('failed to insert the logo')
     # Send email (even if email fails, still return file)
     try:
         send_email(
