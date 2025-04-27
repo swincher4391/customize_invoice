@@ -12,6 +12,7 @@ from email.message import EmailMessage
 from PIL import Image
 import pdfkit
 from xlsx2html import xlsx2html
+import pymupdf
 
 app = Flask(__name__)
 
