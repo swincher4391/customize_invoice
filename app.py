@@ -43,9 +43,9 @@ def send_email(recipient_email, subject, body, attachment_path):
         server.login(smtp_user, smtp_pass)
         server.send_message(msg)
 
-def remove_background(image_path, tolerance=30):
+def remove_background(image_file, tolerance=30):
     """Remove background color based on pixel (0,0) and make transparent."""
-    img = Image.open(image_path).convert("RGBA")
+    img = Image.open(image_file).convert("RGBA")
     datas = img.getdata()
 
     new_data = []
