@@ -154,11 +154,18 @@ def handle_preview_request():
 
     # Insert currency info
     ws['C32'] = f"All amounts shown in {currency}"
+    # Then merge C32:E32 to match original template
+    ws.merge_cells('C32:E32')
 
     # Insert logo at A1
     insert_logo(ws, logo_bytes.read())
-
-    # Protect workbook
+    # Insert PREVIEW watermark across sheet
+    
+    watermark_img = OpenpyxlImage("watermark.png")
+    watermark_img.anchor = 'A28'  # Adjust as needed based on your template layout
+    ws.add_image(watermark_img)
+    
+# Protect workbook
     protect_workbook(wb)
 
     # Save to temp file
