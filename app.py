@@ -12,7 +12,7 @@ from email.message import EmailMessage
 from PIL import Image
 import pdfkit
 from xlsx2html import xlsx2html
-import pymupdf
+import fitz
 
 app = Flask(__name__)
 
@@ -110,6 +110,21 @@ def insert_watermark_background(ws):
         with open("watermark.png", 'rb') as img_file:
             ws._background = img_file.read()
 
+def insert_logo_into_pdf(original_pdf_path, logo_bytes, output_pdf_path):
+    doc = fitz.open(original_pdf_path)
+
+    # Load logo as image
+    logo_img = fitz.Pixmap(fitz.open("png", logo_bytes))
+
+    page = doc[0]  # First page
+
+    # Insert logo at (x, y) position you want
+    rect = fitz.Rect(50, 700, 250, 800)  # (left, top, right, bottom) coordinates
+    page.insert_image(rect, pixmap=logo_img)
+
+    # Save modified PDF
+    doc.save(output_pdf_path)
+    
 # === WEBHOOK ENDPOINTS ===
 @app.route("/preview_webhook", methods=["POST"])
 def handle_preview_request():
@@ -199,6 +214,13 @@ def handle_preview_request():
     pdf_file_path = tmp_path.replace(".xlsx", ".pdf")
     pdfkit.from_file(html_file_path, pdf_file_path)
 
+    #try to insert the missing logo
+    try:
+        insert_logo_into_pdf(
+        original_pdf_path=pdf_path_no_logo,
+        logo_bytes=logo_bytes.getvalue(),   # <-- logo in bytes
+        output_pdf_path=final_pdf_path
+        )
     # Send email (even if email fails, still return file)
     try:
         send_email(
