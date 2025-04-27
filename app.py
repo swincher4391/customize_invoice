@@ -6,7 +6,7 @@ import io
 import tempfile
 import openpyxl
 from openpyxl.drawing.image import Image as OpenpyxlImage
-from PIL import Image, ImageOps
+from openpyxl.styles import Font, Alignment
 import smtplib
 from email.message import EmailMessage
 
@@ -65,7 +65,7 @@ def protect_workbook(workbook, password='etsysc123'):
         sheet.protection.password = password
 
 def insert_logo(ws, image_bytes):
-    """Insert processed logo into cell A1, snapping exactly to the cell size."""
+    """Insert processed logo into cell A1, snapping exactly to A1 size."""
     temp_logo = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     temp_logo.write(image_bytes)
     temp_logo.flush()
@@ -73,22 +73,25 @@ def insert_logo(ws, image_bytes):
 
     img = OpenpyxlImage(temp_logo.name)
 
-    # Read the dimensions of cell A1
-    col_width = ws.column_dimensions['A'].width or 8  # Default width
-    row_height = ws.row_dimensions[1].height or 15    # Default height
+    # Read A1 dimensions
+    col_width = ws.column_dimensions['A'].width or 8
+    row_height = ws.row_dimensions[1].height or 15
 
-    # Convert Excel dimensions to approximate pixels
     col_pixels = int(col_width * 7.5)
     row_pixels = int(row_height * 1.33)
 
-    # Resize the logo to fit inside A1 exactly
     img.width = col_pixels
     img.height = row_pixels
 
-    # Anchor to A1
     img.anchor = 'A1'
 
     ws.add_image(img)
+
+def insert_watermark_background(ws):
+    """Insert watermark.png as a background image (undeletable by users)."""
+    if os.path.exists("watermark.png"):
+        with open("watermark.png", 'rb') as img_file:
+            ws._background = img_file.read()
 
 # === WEBHOOK ENDPOINTS ===
 @app.route("/preview_webhook", methods=["POST"])
@@ -97,7 +100,6 @@ def handle_preview_request():
     data = request.json
     print("🚀 Raw incoming data from Tally:", data)
 
-    # === Now everything below is properly INSIDE the function! ===
     fields_list = data.get('data', {}).get('fields', [])
     fields = {}
 
@@ -141,6 +143,9 @@ def handle_preview_request():
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     ws = wb.active
 
+    # Insert watermark as background
+    insert_watermark_background(ws)
+
     # Insert business info
     ws['A2'] = business_name
     ws['A3'] = address1
@@ -152,20 +157,15 @@ def handle_preview_request():
     ws['D30'] = f"Tax ({tax_percentage}%)"
     ws['E30'] = f'=IF(NOT(IsGoogleSheets),E29*{float(tax_percentage)}/100,"GOOGLE SHEETS DETECTED")'
 
-    # Insert currency info
+    # Insert currency info, then merge and center
     ws['C32'] = f"All amounts shown in {currency}"
-    # Then merge C32:E32 to match original template
     ws.merge_cells('C32:E32')
+    ws['C32'].alignment = Alignment(horizontal='center', vertical='center')
 
     # Insert logo at A1
     insert_logo(ws, logo_bytes.read())
-    # Insert PREVIEW watermark across sheet
-    
-    watermark_img = OpenpyxlImage("watermark.png")
-    watermark_img.anchor = 'A28'  # Adjust as needed based on your template layout
-    ws.add_image(watermark_img)
-    
-# Protect workbook
+
+    # Protect workbook
     protect_workbook(wb)
 
     # Save to temp file
@@ -173,16 +173,18 @@ def handle_preview_request():
         wb.save(tmp.name)
         tmp_path = tmp.name
 
-    # Send email
-    send_email(
-        recipient_email=email,
-        subject="Your Custom Invoice Preview is Ready!",
-        body=f"Hello {business_name},\n\nThank you for your order! Please find your customized invoice attached.\n\nBest regards,\nSwincher Creative",
-        attachment_path=tmp_path
-    )
+    # Send email (even if email fails, still return file)
+    try:
+        send_email(
+            recipient_email=email,
+            subject="Your Custom Invoice Preview is Ready!",
+            body=f"Hello {business_name},\n\nThank you for your order! Please find your customized invoice attached.\n\nBest regards,\nSwincher Creative",
+            attachment_path=tmp_path
+        )
+    except Exception as e:
+        print(f"⚠️ Failed to send email: {e}")
 
     return send_file(tmp_path, as_attachment=True, download_name=f"{business_name}_invoice_preview.xlsx")
 
 if __name__ == "__main__":
     app.run(debug=True)
-
