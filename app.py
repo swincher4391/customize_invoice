@@ -77,23 +77,37 @@ def insert_logo(ws, image_bytes):
     ws.add_image(img)
 
 # === WEBHOOK ENDPOINTS ===
-
 @app.route("/preview_webhook", methods=["POST"])
 def handle_preview_request():
     """Process incoming Tally form submission for preview"""
     data = request.json
     print("🚀 Raw incoming data from Tally:", data)   # <-- Add this line!
     # Extract fields
-    fields = {field["label"]: field["value"] for field in data.get("data", {}).get("fields", [])}
-    business_name = fields.get('Business Name', 'Your Business')
+fields_list = data.get('data', {}).get('fields', [])
+fields = {}
+
+for field in fields_list:
+    label = field.get('label')
+    value = field.get('value')
+
+    if isinstance(value, list):
+        # File upload case (logo)
+        if value and isinstance(value[0], dict) and 'url' in value[0]:
+            value = value[0]['url']
+        else:
+            value = None
+
+    fields[label] = value
+
+    # Extract cleanly
+    business_name = fields.get('Company Name', 'Your Business')
     address1 = fields.get('Address', '')
     address2 = fields.get('City, State ZIP', '')
-    phone = fields.get('Phone Number', '')
-    email = fields.get('Email Address', '')
-    tax_percentage = fields.get('Tax Percentage', '7')
+    phone = fields.get('Phone', '')
+    email = fields.get('Email', '')
+    tax_percentage = fields.get('Tax %', '7')
     currency = fields.get('Currency', 'USD')
-    notes = fields.get('Notes (Optional)', '')
-    logo_url = fields.get('Upload a Logo')
+    logo_url = fields.get('Upload your logo', '')
 
     if not logo_url:
         return jsonify({"error": "Logo upload missing!"}), 400
