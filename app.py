@@ -14,6 +14,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from dateutil import parser
+import uuid
 
 app = Flask(__name__)
 
@@ -48,9 +49,6 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
     msg['To'] = recipient_email
     
     # Add more headers to improve deliverability
-    import uuid
-    from datetime import datetime
-    
     # Add a unique Message-ID
     domain = smtp_user.split('@')[-1]
     msg['Message-ID'] = f"<{uuid.uuid4()}@{domain}>"
@@ -122,7 +120,34 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
             file_name = os.path.basename(attachment_path)
 
         if attachment_path.endswith('.xlsx'):
-            maintype, subtype = 'application', 'vnd.openxmlformats-officedocument.spreadshe
+            maintype = 'application'
+            subtype = 'vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        else:
+            maintype = 'application'
+            subtype = 'octet-stream'
+
+        msg.add_attachment(file_data, maintype=maintype, subtype=subtype, filename=file_name)
+
+    # Send the email with a retry mechanism
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+                print(f"✅ Email sent successfully to {recipient_email}")
+                break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"⚠️ Email attempt {attempt + 1} failed. Retrying in {retry_delay} seconds: {e}")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                print(f"❌ All email attempts failed: {e}")
+                raise
 
 def remove_background(image_file, tolerance=30):
     img = Image.open(image_file).convert("RGBA")
@@ -310,9 +335,9 @@ def handle_preview_request():
                     recipient_email=email,
                     subject="Your Custom Invoice is Ready!",
                     body="Please find attached your custom Excel invoice template. You can fill in the item details and the calculations will be performed automatically.",
-                    attachment_paths=[tmp.name]
+                    attachment_paths=[tmp.name],
+                    business_name=business_name  # Pass the business name for personalization
                 )
-                print(f"✅ Email sent successfully to {email}")
                 
                 # Mark this event as processed with a timestamp
                 if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
@@ -345,6 +370,7 @@ def health_check():
     return jsonify({
         "status": "ok",
         "processed_events": len(PROCESSED_EVENTS),
+        "timestamp": datetime.now().isoformat()
     })
 
 if __name__ == "__main__":
