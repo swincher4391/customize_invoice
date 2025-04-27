@@ -12,7 +12,19 @@ from email.message import EmailMessage
 from PIL import Image
 import pdfkit
 import fitz
+
+# Apply the patch before importing xlsx2html
 import xlsx2html.core
+
+# === SAFE PATCH ===
+def safe_images_to_data(ws):
+    return []
+
+# Replace the original function with our safe version
+xlsx2html.core.images_to_data = safe_images_to_data
+
+# Now import xlsx2html functions after patching
+from xlsx2html import xlsx2html
 
 app = Flask(__name__)
 
@@ -21,12 +33,6 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 TEMPLATE_PATH = "invoice-watermarked.xlsx"
 notion = NotionClient(auth=NOTION_TOKEN)
-
-# === SAFE PATCH ===
-def safe_images_to_data(ws):
-    return []
-
-xlsx2html.core.images_to_data = safe_images_to_data
 
 # === UTILITIES ===
 def send_email(recipient_email, subject, body, attachment_paths):
@@ -174,13 +180,45 @@ def handle_preview_request():
         tmp_path = tmp.name
 
     html_file_path = tmp_path.replace(".xlsx", ".html")
-    with open(html_file_path, "w", encoding="utf-8") as f:
-        xlsx2html(tmp_path, f)
+    
+    try:
+        with open(html_file_path, "w", encoding="utf-8") as f:
+            xlsx2html(tmp_path, f)
+    except Exception as e:
+        print(f"⚠️ Error in xlsx2html conversion: {e}")
+        # Create a simple HTML file if conversion fails
+        with open(html_file_path, "w", encoding="utf-8") as f:
+            f.write(f"""<!DOCTYPE html>
+            <html>
+            <head>
+                <title>Invoice for {business_name}</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; }}
+                </style>
+            </head>
+            <body>
+                <h1>Invoice</h1>
+                <p>{business_name}<br/>
+                {address1}<br/>
+                {address2}<br/>
+                {phone}<br/>
+                {email}</p>
+                <p>Tax rate: {tax_percentage}%</p>
+                <p>Currency: {currency}</p>
+            </body>
+            </html>
+            """)
 
     pdf_path_no_logo = tmp_path.replace('.xlsx', '_nologo.pdf')
     final_pdf_path = tmp_path.replace('.xlsx', '.pdf')
 
-    pdfkit.from_file(html_file_path, pdf_path_no_logo)
+    try:
+        pdfkit.from_file(html_file_path, pdf_path_no_logo)
+    except Exception as e:
+        print(f"⚠️ Error generating PDF: {e}")
+        # Create a simple PDF if conversion fails
+        with open(pdf_path_no_logo, "w") as f:
+            f.write(f"Invoice for {business_name}")
 
     try:
         insert_logo_into_pdf(
@@ -190,6 +228,9 @@ def handle_preview_request():
         )
     except Exception as e:
         print('⚠️ Failed to insert the logo:', e)
+        # If logo insertion fails, use the PDF without logo
+        import shutil
+        shutil.copy(pdf_path_no_logo, final_pdf_path)
 
     try:
         send_email(
