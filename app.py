@@ -69,8 +69,29 @@ def remove_background(image_file, tolerance=30):
 
 def protect_workbook(workbook, password='etsysc123'):
     for sheet in workbook.worksheets:
+        # Enable protection with specific options
         sheet.protection.sheet = True
         sheet.protection.password = password
+        
+        # Disable object editing/deletion
+        sheet.protection.objects = True
+        sheet.protection.scenarios = True
+        
+        # Other options you might want to set:
+        sheet.protection.selectLockedCells = False
+        sheet.protection.selectUnlockedCells = False
+        sheet.protection.formatCells = False
+        sheet.protection.formatColumns = False
+        sheet.protection.formatRows = False
+        sheet.protection.insertColumns = False
+        sheet.protection.insertRows = False
+        sheet.protection.insertHyperlinks = False
+        sheet.protection.deleteColumns = False
+        sheet.protection.deleteRows = False
+        sheet.protection.sort = False
+        sheet.protection.autoFilter = False
+        sheet.protection.pivotTables = False
+        sheet.protection.drawings = True  # Specifically protects drawings/images
 
 def insert_logo(ws, image_bytes):
     temp_logo = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
