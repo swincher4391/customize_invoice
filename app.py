@@ -295,6 +295,7 @@ def is_stale_event(event_time, max_age_minutes=5):
         return False, 0  # If we can't parse the time, assume it's not stale
 
 # === WEBHOOK ===
+# Fix the indentation in the webhook handler function
 @app.route("/preview_webhook", methods=["POST"])
 def handle_preview_request():
     temp_files = []  # List to keep track of temporary files to clean up
@@ -394,45 +395,44 @@ def handle_preview_request():
             wb.save(tmp.name)
             temp_files.append(tmp.name)  # Add to cleanup list
 
-
         notion_page_id = update_notion_database(fields=fields)
 
-            # Send the email
-            try:
-                send_email(
-                    recipient_email=email,
-                    subject="Your Custom Invoice is Ready!",
-                    body="Please find attached your custom Excel invoice template. You can fill in the item details and the calculations will be performed automatically.",
-                    attachment_paths=[tmp.name],
-                    business_name=business_name  # Pass the business name for personalization
-                )
-                
-                # Mark this event as successfully processed
-                if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
-                    PROCESSED_EVENTS.popitem(last=False)
-                PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": True}
-                
-                print(f"✅ Successfully processed event: {event_id}")
-                # Then after successfully sending the email, update the Excel Sent field
-                if notion_page_id:
-                    try:
-                        notion.pages.update(
-                            page_id=notion_page_id,
-                            properties={
-                                "Excel Sent": {"checkbox": True}
-                            }
-                        )
-                        print(f"✅ Updated Excel Sent status in Notion")
-                    except Exception as e:
-                        print(f"⚠️ Error updating Excel Sent status: {e}")
-            except Exception as e:
-                # Mark as received but not successfully processed
-                if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
-                    PROCESSED_EVENTS.popitem(last=False)
-                PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": False}
-                
-                print(f"⚠️ Failed to send email: {e}")
-                return jsonify({"error": "Failed to send email"}), 500
+        # Send the email
+        try:
+            send_email(
+                recipient_email=email,
+                subject="Your Custom Invoice is Ready!",
+                body="Please find attached your custom Excel invoice template. You can fill in the item details and the calculations will be performed automatically.",
+                attachment_paths=[tmp.name],
+                business_name=business_name  # Pass the business name for personalization
+            )
+            
+            # Mark this event as successfully processed
+            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
+                PROCESSED_EVENTS.popitem(last=False)
+            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": True}
+            
+            print(f"✅ Successfully processed event: {event_id}")
+            # Then after successfully sending the email, update the Excel Sent field
+            if notion_page_id:
+                try:
+                    notion.pages.update(
+                        page_id=notion_page_id,
+                        properties={
+                            "Excel Sent": {"checkbox": True}
+                        }
+                    )
+                    print(f"✅ Updated Excel Sent status in Notion")
+                except Exception as e:
+                    print(f"⚠️ Error updating Excel Sent status: {e}")
+        except Exception as e:
+            # Mark as received but not successfully processed
+            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
+                PROCESSED_EVENTS.popitem(last=False)
+            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": False}
+            
+            print(f"⚠️ Failed to send email: {e}")
+            return jsonify({"error": "Failed to send email"}), 500
 
         return '', 204
         
