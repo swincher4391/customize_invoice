@@ -8,4 +8,4 @@ notion-client
 xlsx2html 
 pdfkit
 pymupdf
-dateutil
+python-dateutil
