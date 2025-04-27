@@ -29,34 +29,100 @@ PROCESSED_EVENTS = OrderedDict()
 MAX_CACHE_SIZE = 100
 
 # === UTILITIES ===
-def send_email(recipient_email, subject, body, attachment_paths):
+def send_email(recipient_email, subject, body, attachment_paths, business_name=''):
     smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     smtp_port = int(os.getenv('SMTP_PORT', 587))
     smtp_user = os.getenv('SMTP_USER')
     smtp_pass = os.getenv('SMTP_PASS')
+    sender_name = os.getenv('SENDER_NAME', 'Invoice Generator')
 
+    # Create a more sophisticated email
     msg = EmailMessage()
-    msg['Subject'] = subject
-    msg['From'] = smtp_user
+    
+    # Better subject line with personalization
+    personalized_subject = f"{business_name} - {subject}" if business_name else subject
+    msg['Subject'] = personalized_subject
+    
+    # Add proper From header with sender name
+    msg['From'] = f'"{sender_name}" <{smtp_user}>'
     msg['To'] = recipient_email
+    
+    # Add more headers to improve deliverability
+    import uuid
+    from datetime import datetime
+    
+    # Add a unique Message-ID
+    domain = smtp_user.split('@')[-1]
+    msg['Message-ID'] = f"<{uuid.uuid4()}@{domain}>"
+    
+    # Add Date header
+    msg['Date'] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
+    
+    # Add X-Mailer header 
+    msg['X-Mailer'] = 'InvoiceCustomizer Service'
+    
+    # Add a List-Unsubscribe header (helps with spam prevention)
+    msg['List-Unsubscribe'] = f'<mailto:{smtp_user}?subject=Unsubscribe>'
+    
+    # Create personalized HTML content
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{personalized_subject}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; padding: 20px; }}
+            .container {{ max-width: 600px; margin: 0 auto; }}
+            .header {{ background-color: #f8f9fa; padding: 15px; border-bottom: 1px solid #e9ecef; }}
+            .content {{ padding: 20px 0; }}
+            .footer {{ font-size: 12px; color: #6c757d; padding-top: 20px; border-top: 1px solid #e9ecef; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h2>Your Custom Invoice is Ready!</h2>
+            </div>
+            <div class="content">
+                <p>Hello{' ' + business_name if business_name else ''},</p>
+                
+                <p>Thank you for using our Invoice Generator service! Your custom Excel invoice template is now ready.</p>
+                
+                <p>We've attached the spreadsheet to this email. You can fill in the item details, and the calculations will be performed automatically.</p>
+                
+                <p>The invoice includes:</p>
+                <ul>
+                    <li>Your business information</li>
+                    <li>Customized tax rate</li>
+                    <li>Your logo</li>
+                    <li>Protected formulas to prevent accidental changes</li>
+                </ul>
+                
+                <p>If you have any questions or need assistance, please reply to this email.</p>
+            </div>
+            <div class="footer">
+                <p>This is a transactional email sent to you because you submitted the Invoice Customization Form.</p>
+                <p>To unsubscribe from future emails, please reply with "Unsubscribe" in the subject line.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Set both plain text and HTML content
     msg.set_content(body)
+    msg.add_alternative(html_content, subtype='html')
 
+    # Add attachments
     for attachment_path in attachment_paths:
         with open(attachment_path, 'rb') as f:
             file_data = f.read()
             file_name = os.path.basename(attachment_path)
 
         if attachment_path.endswith('.xlsx'):
-            maintype, subtype = 'application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        else:
-            maintype, subtype = 'application', 'octet-stream'
-
-        msg.add_attachment(file_data, maintype=maintype, subtype=subtype, filename=file_name)
-
-    with smtplib.SMTP(smtp_server, smtp_port) as server:
-        server.starttls()
-        server.login(smtp_user, smtp_pass)
-        server.send_message(msg)
+            maintype, subtype = 'application', 'vnd.openxmlformats-officedocument.spreadshe
 
 def remove_background(image_file, tolerance=30):
     img = Image.open(image_file).convert("RGBA")
