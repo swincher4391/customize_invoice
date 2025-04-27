@@ -149,7 +149,7 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
                 print(f"❌ All email attempts failed: {e}")
                 raise
 
-def remove_background(image_file, tolerance=30):
+def remove_background(image_file, tolerance=50):
     img = Image.open(image_file).convert("RGBA")
     datas = img.getdata()
 
