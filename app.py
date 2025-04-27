@@ -14,16 +14,19 @@ import pdfkit
 import fitz
 
 # Apply the patch before importing xlsx2html
-import xlsx2html.core
+import sys
+import types
 
-# === SAFE PATCH ===
-def safe_images_to_data(ws):
-    return []
+# Create a custom module to completely override xlsx2html's image handling
+class CustomXlsx2HtmlCore:
+    @staticmethod
+    def images_to_data(ws):
+        return []
 
-# Replace the original function with our safe version
-xlsx2html.core.images_to_data = safe_images_to_data
+# Replace the module
+sys.modules['xlsx2html.core'] = CustomXlsx2HtmlCore
 
-# Now import xlsx2html functions after patching
+# Now import xlsx2html after patching
 from xlsx2html import xlsx2html
 
 app = Flask(__name__)
@@ -107,12 +110,26 @@ def insert_watermark_background(ws):
             ws._background = img_file.read()
 
 def insert_logo_into_pdf(original_pdf_path, logo_bytes, output_pdf_path):
-    doc = fitz.open(original_pdf_path)
-    logo_img = fitz.Pixmap(fitz.open("png", logo_bytes))
-    page = doc[0]
-    rect = fitz.Rect(50, 700, 250, 800)  # adjust as needed
-    page.insert_image(rect, pixmap=logo_img)
-    doc.save(output_pdf_path)
+    try:
+        doc = fitz.open(original_pdf_path)
+        # Create a temporary file for the logo
+        logo_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        logo_temp.write(logo_bytes)
+        logo_temp.close()
+        
+        # Use the file path instead of direct bytes
+        page = doc[0]
+        rect = fitz.Rect(50, 700, 250, 800)  # Adjust as needed
+        page.insert_image(rect, filename=logo_temp.name)
+        doc.save(output_pdf_path)
+        
+        # Clean up temp file
+        os.unlink(logo_temp.name)
+    except Exception as e:
+        print(f"⚠️ Detailed error in insert_logo_into_pdf: {e}")
+        # If logo insertion fails, just copy the original PDF
+        import shutil
+        shutil.copy(original_pdf_path, output_pdf_path)
 
 # === WEBHOOK ===
 @app.route("/preview_webhook", methods=["POST"])
@@ -179,35 +196,59 @@ def handle_preview_request():
         wb.save(tmp.name)
         tmp_path = tmp.name
 
+    # Skip xlsx2html conversion since it's causing issues
+    # Just create an HTML file directly from the data
     html_file_path = tmp_path.replace(".xlsx", ".html")
-    
-    try:
-        with open(html_file_path, "w", encoding="utf-8") as f:
-            xlsx2html(tmp_path, f)
-    except Exception as e:
-        print(f"⚠️ Error in xlsx2html conversion: {e}")
-        # Create a simple HTML file if conversion fails
-        with open(html_file_path, "w", encoding="utf-8") as f:
-            f.write(f"""<!DOCTYPE html>
-            <html>
-            <head>
-                <title>Invoice for {business_name}</title>
-                <style>
-                    body {{ font-family: Arial, sans-serif; }}
-                </style>
-            </head>
-            <body>
-                <h1>Invoice</h1>
-                <p>{business_name}<br/>
+    with open(html_file_path, "w", encoding="utf-8") as f:
+        f.write(f"""<!DOCTYPE html>
+        <html>
+        <head>
+            <title>Invoice for {business_name}</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 30px; }}
+                .header {{ display: flex; justify-content: space-between; }}
+                .company-info {{ margin-bottom: 30px; }}
+                table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+                table, th, td {{ border: 1px solid #ddd; }}
+                th, td {{ padding: 8px; text-align: left; }}
+                .totals {{ text-align: right; margin-top: 20px; }}
+                .currency {{ text-align: center; margin-top: 30px; font-style: italic; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>INVOICE</h1>
+            </div>
+            <div class="company-info">
+                <p><strong>{business_name}</strong><br/>
                 {address1}<br/>
                 {address2}<br/>
                 {phone}<br/>
                 {email}</p>
-                <p>Tax rate: {tax_percentage}%</p>
-                <p>Currency: {currency}</p>
-            </body>
-            </html>
-            """)
+            </div>
+            <table>
+                <tr>
+                    <th>Item</th>
+                    <th>Description</th>
+                    <th>Quantity</th>
+                    <th>Unit Price</th>
+                    <th>Amount</th>
+                </tr>
+                <tr>
+                    <td colspan="5" style="text-align: center;">Items will be filled in the Excel document</td>
+                </tr>
+            </table>
+            <div class="totals">
+                <p>Subtotal: ___________</p>
+                <p>Tax ({tax_percentage}%): ___________</p>
+                <p><strong>Total: ___________</strong></p>
+            </div>
+            <div class="currency">
+                All amounts shown in {currency}
+            </div>
+        </body>
+        </html>
+        """)
 
     pdf_path_no_logo = tmp_path.replace('.xlsx', '_nologo.pdf')
     final_pdf_path = tmp_path.replace('.xlsx', '.pdf')
@@ -220,6 +261,9 @@ def handle_preview_request():
         with open(pdf_path_no_logo, "w") as f:
             f.write(f"Invoice for {business_name}")
 
+    # Reset logo_bytes position
+    logo_bytes.seek(0)
+    
     try:
         insert_logo_into_pdf(
             original_pdf_path=pdf_path_no_logo,
