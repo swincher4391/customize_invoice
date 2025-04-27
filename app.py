@@ -7,6 +7,8 @@ import tempfile
 import openpyxl
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from PIL import Image, ImageOps
+import smtplib
+from email.message import EmailMessage
 
 app = Flask(__name__)
 
@@ -40,7 +42,7 @@ def send_email(recipient_email, subject, body, attachment_path):
         server.starttls()
         server.login(smtp_user, smtp_pass)
         server.send_message(msg)
-        
+
 def remove_background(image_path, tolerance=30):
     """Remove background color based on pixel (0,0) and make transparent."""
     img = Image.open(image_path).convert("RGBA")
@@ -70,7 +72,7 @@ def insert_logo(ws, image_bytes):
     temp_logo.close()
 
     img = OpenpyxlImage(temp_logo.name)
-    img.width = 200  # Resize logo to a clean standard size (can adjust)
+    img.width = 200
     img.height = 200
     img.anchor = 'A1'
 
@@ -81,25 +83,24 @@ def insert_logo(ws, image_bytes):
 def handle_preview_request():
     """Process incoming Tally form submission for preview"""
     data = request.json
-    print("🚀 Raw incoming data from Tally:", data)   # <-- Add this line!
-    # Extract fields
-fields_list = data.get('data', {}).get('fields', [])
-fields = {}
+    print("🚀 Raw incoming data from Tally:", data)
 
-for field in fields_list:
-    label = field.get('label')
-    value = field.get('value')
+    # === Now everything below is properly INSIDE the function! ===
+    fields_list = data.get('data', {}).get('fields', [])
+    fields = {}
 
-    if isinstance(value, list):
-        # File upload case (logo)
-        if value and isinstance(value[0], dict) and 'url' in value[0]:
-            value = value[0]['url']
-        else:
-            value = None
+    for field in fields_list:
+        label = field.get('label')
+        value = field.get('value')
 
-    fields[label] = value
+        if isinstance(value, list):
+            if value and isinstance(value[0], dict) and 'url' in value[0]:
+                value = value[0]['url']
+            else:
+                value = None
 
-    # Extract cleanly
+        fields[label] = value
+
     business_name = fields.get('Company Name', 'Your Business')
     address1 = fields.get('Address', '')
     address2 = fields.get('City, State ZIP', '')
@@ -161,9 +162,8 @@ for field in fields_list:
         attachment_path=tmp_path
     )
 
-    # 🛠 CORRECTLY INDENTED:
     return send_file(tmp_path, as_attachment=True, download_name=f"{business_name}_invoice_preview.xlsx")
-
 
 if __name__ == "__main__":
     app.run(debug=True)
+
