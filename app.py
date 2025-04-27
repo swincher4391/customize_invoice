@@ -138,13 +138,10 @@ def handle_preview_request():
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         wb.save(tmp.name)
         tmp_path = tmp.name
-# Save to temp file
-with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-    wb.save(tmp.name)
-    tmp_path = tmp.name
+
 
 # ✉️ Send email to the form-submitted email
-send_email(
+    send_email(
     recipient_email=email,
     subject="Your Custom Invoice Preview is Ready!",
     body=f"Hello {business_name},\n\nThank you for your order! Please find your customized invoice attached.\n\nBest regards,\nSwincher Creative",
