@@ -164,7 +164,65 @@ def remove_background(image_file, tolerance=50):  # Increased from 30 to 50
             new_data.append(item)
     img.putdata(new_data)
     return img
-
+def update_notion_database(fields, event_id=None):
+    """Updates the Notion database with preview information using existing fields"""
+    if not NOTION_TOKEN or not DATABASE_ID:
+        print("⚠️ Notion credentials not set, skipping database update")
+        return
+    
+    try:
+        # Extract relevant information
+        business_name = fields.get('Company Name', 'Unknown')
+        email = fields.get('Email', '')
+        timestamp = datetime.now().isoformat()
+        
+        # Prepare the data for Notion using only existing fields
+        properties = {
+            "Name": {"title": [{"text": {"content": business_name}}]},
+            "Email": {"email": email},
+            "Timestamp": {"date": {"start": timestamp}},
+            "Validated": {"checkbox": True},
+            "Excel Sent": {"checkbox": False}  # Will be updated to True when email is sent
+        }
+        
+        # If we have a company name, add it to the Company field
+        if fields.get('Company Name'):
+            properties["Company"] = {"rich_text": [{"text": {"content": fields.get('Company Name', '')}}]}
+        
+        # Check if this email already exists in the database
+        existing_pages = notion.databases.query(
+            database_id=DATABASE_ID,
+            filter={
+                "property": "Email",
+                "email": {
+                    "equals": email
+                }
+            }
+        ).get("results", [])
+        
+        if existing_pages:
+            # Update existing page
+            notion.pages.update(
+                page_id=existing_pages[0]["id"],
+                properties=properties
+            )
+            page_id = existing_pages[0]["id"]
+            print(f"✅ Updated existing Notion entry for {business_name}")
+        else:
+            # Create new page
+            response = notion.pages.create(
+                parent={"database_id": DATABASE_ID},
+                properties=properties
+            )
+            page_id = response["id"]
+            print(f"✅ Created new Notion entry for {business_name}")
+        
+        return page_id
+            
+    except Exception as e:
+        print(f"⚠️ Error updating Notion database: {e}")
+        return None
+        
 def protect_workbook(workbook, password='etsysc123'):
     for sheet in workbook.worksheets:
         # Enable protection with specific options
@@ -335,7 +393,10 @@ def handle_preview_request():
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
             wb.save(tmp.name)
             temp_files.append(tmp.name)  # Add to cleanup list
-            
+
+
+        notion_page_id = update_notion_database(fields=fields)
+
             # Send the email
             try:
                 send_email(
@@ -352,7 +413,18 @@ def handle_preview_request():
                 PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": True}
                 
                 print(f"✅ Successfully processed event: {event_id}")
-                
+                # Then after successfully sending the email, update the Excel Sent field
+                if notion_page_id:
+                    try:
+                        notion.pages.update(
+                            page_id=notion_page_id,
+                            properties={
+                                "Excel Sent": {"checkbox": True}
+                            }
+                        )
+                        print(f"✅ Updated Excel Sent status in Notion")
+                    except Exception as e:
+                        print(f"⚠️ Error updating Excel Sent status: {e}")
             except Exception as e:
                 # Mark as received but not successfully processed
                 if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
