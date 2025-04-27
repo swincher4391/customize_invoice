@@ -149,12 +149,14 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
                 print(f"❌ All email attempts failed: {e}")
                 raise
 
-def remove_background(image_file, tolerance=50):
+def remove_background(image_file, tolerance=50):  # Increased from 30 to 50
     img = Image.open(image_file).convert("RGBA")
     datas = img.getdata()
 
     new_data = []
     background_color = datas[0]
+    print(f"Detected background color: {background_color}")  # Debug output
+    
     for item in datas:
         if all(abs(item[i] - background_color[i]) <= tolerance for i in range(3)):
             new_data.append((255, 255, 255, 0))
@@ -238,6 +240,7 @@ def is_stale_event(event_time, max_age_minutes=5):
 @app.route("/preview_webhook", methods=["POST"])
 def handle_preview_request():
     temp_files = []  # List to keep track of temporary files to clean up
+    event_id = None
     
     try:
         data = request.json
@@ -247,20 +250,24 @@ def handle_preview_request():
         event_id = data.get('eventId')
         event_time = data.get('createdAt')
 
-        # Check if we've already processed this event
-        if event_id in PROCESSED_EVENTS:
+        # Check if we've already processed this event SUCCESSFULLY
+        if event_id in PROCESSED_EVENTS and PROCESSED_EVENTS[event_id].get("processed", False):
             print(f"✅ Skipping already processed event: {event_id}")
             return '', 204
+        
+        # If we received it before but didn't process it successfully, we'll try again
+        if event_id in PROCESSED_EVENTS:
+            print(f"⚠️ Retrying previously failed event: {event_id}")
         
         # Check if the event is too old (stale)
         is_stale, time_diff = is_stale_event(event_time)
         if is_stale:
             print(f"⚠️ Skipping stale event from {time_diff:.1f} minutes ago: {event_id}")
             
-            # Even though we're skipping processing, mark it as processed to prevent future retries
+            # Mark as received but not successfully processed
             if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
                 PROCESSED_EVENTS.popitem(last=False)
-            PROCESSED_EVENTS[event_id] = time.time()
+            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": False}
             
             return '', 204
 
@@ -339,18 +346,31 @@ def handle_preview_request():
                     business_name=business_name  # Pass the business name for personalization
                 )
                 
-                # Mark this event as processed with a timestamp
+                # Mark this event as successfully processed
                 if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
                     PROCESSED_EVENTS.popitem(last=False)
-                PROCESSED_EVENTS[event_id] = time.time()
+                PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": True}
+                
+                print(f"✅ Successfully processed event: {event_id}")
                 
             except Exception as e:
+                # Mark as received but not successfully processed
+                if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
+                    PROCESSED_EVENTS.popitem(last=False)
+                PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": False}
+                
                 print(f"⚠️ Failed to send email: {e}")
                 return jsonify({"error": "Failed to send email"}), 500
 
         return '', 204
         
     except Exception as e:
+        # Mark the event as received but not processed if we have an event_id
+        if event_id:
+            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
+                PROCESSED_EVENTS.popitem(last=False)
+            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": False}
+        
         print(f"⚠️ Unhandled error: {e}")
         return jsonify({"error": str(e)}), 500
         
@@ -370,6 +390,7 @@ def health_check():
     return jsonify({
         "status": "ok",
         "processed_events": len(PROCESSED_EVENTS),
+        "processed_details": {k: v.get("processed", False) for k, v in PROCESSED_EVENTS.items()},
         "timestamp": datetime.now().isoformat()
     })
 
