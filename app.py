@@ -82,7 +82,7 @@ def insert_logo(ws, image_bytes):
 def handle_preview_request():
     """Process incoming Tally form submission for preview"""
     data = request.json
-
+    print("🚀 Raw incoming data from Tally:", data)   # <-- Add this line!
     # Extract fields
     fields = {field["label"]: field["value"] for field in data.get("data", {}).get("fields", [])}
     business_name = fields.get('Business Name', 'Your Business')
