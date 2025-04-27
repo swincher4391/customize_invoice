@@ -11,23 +11,7 @@ import smtplib
 from email.message import EmailMessage
 from PIL import Image
 import pdfkit
-import fitz
-
-# Apply the patch before importing xlsx2html
-import sys
-import types
-
-# Create a custom module to completely override xlsx2html's image handling
-class CustomXlsx2HtmlCore:
-    @staticmethod
-    def images_to_data(ws):
-        return []
-
-# Replace the module
-sys.modules['xlsx2html.core'] = CustomXlsx2HtmlCore
-
-# Now import xlsx2html after patching
-from xlsx2html import xlsx2html
+import shutil
 
 app = Flask(__name__)
 
@@ -109,28 +93,6 @@ def insert_watermark_background(ws):
         with open("watermark.png", 'rb') as img_file:
             ws._background = img_file.read()
 
-def insert_logo_into_pdf(original_pdf_path, logo_bytes, output_pdf_path):
-    try:
-        doc = fitz.open(original_pdf_path)
-        # Create a temporary file for the logo
-        logo_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-        logo_temp.write(logo_bytes)
-        logo_temp.close()
-        
-        # Use the file path instead of direct bytes
-        page = doc[0]
-        rect = fitz.Rect(50, 700, 250, 800)  # Adjust as needed
-        page.insert_image(rect, filename=logo_temp.name)
-        doc.save(output_pdf_path)
-        
-        # Clean up temp file
-        os.unlink(logo_temp.name)
-    except Exception as e:
-        print(f"⚠️ Detailed error in insert_logo_into_pdf: {e}")
-        # If logo insertion fails, just copy the original PDF
-        import shutil
-        shutil.copy(original_pdf_path, output_pdf_path)
-
 # === WEBHOOK ===
 @app.route("/preview_webhook", methods=["POST"])
 def handle_preview_request():
@@ -173,6 +135,13 @@ def handle_preview_request():
     processed_logo.save(logo_bytes, format="PNG")
     logo_bytes.seek(0)
 
+    # Save logo to a file for later use in the PDF
+    logo_path = tempfile.mktemp(suffix=".png")
+    with open(logo_path, 'wb') as f:
+        f.write(logo_bytes.getvalue())
+    
+    logo_bytes.seek(0)  # Reset position for Excel use
+
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     ws = wb.active
 
@@ -196,8 +165,7 @@ def handle_preview_request():
         wb.save(tmp.name)
         tmp_path = tmp.name
 
-    # Skip xlsx2html conversion since it's causing issues
-    # Just create an HTML file directly from the data
+    # Create HTML file directly
     html_file_path = tmp_path.replace(".xlsx", ".html")
     with open(html_file_path, "w", encoding="utf-8") as f:
         f.write(f"""<!DOCTYPE html>
@@ -213,9 +181,11 @@ def handle_preview_request():
                 th, td {{ padding: 8px; text-align: left; }}
                 .totals {{ text-align: right; margin-top: 20px; }}
                 .currency {{ text-align: center; margin-top: 30px; font-style: italic; }}
+                .logo {{ position: absolute; top: 50px; right: 50px; max-width: 150px; max-height: 100px; }}
             </style>
         </head>
         <body>
+            <img src="file://{logo_path}" class="logo">
             <div class="header">
                 <h1>INVOICE</h1>
             </div>
@@ -250,41 +220,32 @@ def handle_preview_request():
         </html>
         """)
 
-    pdf_path_no_logo = tmp_path.replace('.xlsx', '_nologo.pdf')
-    final_pdf_path = tmp_path.replace('.xlsx', '.pdf')
-
+    # Generate PDF with pdfkit (logo already in HTML)
+    pdf_path = tmp_path.replace('.xlsx', '.pdf')
     try:
-        pdfkit.from_file(html_file_path, pdf_path_no_logo)
+        pdfkit.from_file(html_file_path, pdf_path)
     except Exception as e:
         print(f"⚠️ Error generating PDF: {e}")
         # Create a simple PDF if conversion fails
-        with open(pdf_path_no_logo, "w") as f:
+        with open(pdf_path, "w") as f:
             f.write(f"Invoice for {business_name}")
-
-    # Reset logo_bytes position
-    logo_bytes.seek(0)
-    
-    try:
-        insert_logo_into_pdf(
-            original_pdf_path=pdf_path_no_logo,
-            logo_bytes=logo_bytes.getvalue(),
-            output_pdf_path=final_pdf_path
-        )
-    except Exception as e:
-        print('⚠️ Failed to insert the logo:', e)
-        # If logo insertion fails, use the PDF without logo
-        import shutil
-        shutil.copy(pdf_path_no_logo, final_pdf_path)
 
     try:
         send_email(
             recipient_email=email,
             subject="Your Custom Invoice is Ready!",
             body="Please find attached both the Excel and PDF versions.",
-            attachment_paths=[tmp_path, final_pdf_path]
+            attachment_paths=[tmp_path, pdf_path]
         )
     except Exception as e:
         print(f"⚠️ Failed to send email: {e}")
+
+    # Clean up temporary files
+    try:
+        os.unlink(logo_path)
+        os.unlink(html_file_path)
+    except Exception as e:
+        print(f"⚠️ Error cleaning up temporary files: {e}")
 
     return '', 204
 
