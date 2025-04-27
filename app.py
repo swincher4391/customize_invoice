@@ -65,15 +65,27 @@ def protect_workbook(workbook, password='etsysc123'):
         sheet.protection.password = password
 
 def insert_logo(ws, image_bytes):
-    """Insert processed logo into A1."""
+    """Insert processed logo into cell A1, snapping exactly to the cell size."""
     temp_logo = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     temp_logo.write(image_bytes)
     temp_logo.flush()
     temp_logo.close()
 
     img = OpenpyxlImage(temp_logo.name)
-    img.width = 200
-    img.height = 200
+
+    # Read the dimensions of cell A1
+    col_width = ws.column_dimensions['A'].width or 8  # Default width
+    row_height = ws.row_dimensions[1].height or 15    # Default height
+
+    # Convert Excel dimensions to approximate pixels
+    col_pixels = int(col_width * 7.5)
+    row_pixels = int(row_height * 1.33)
+
+    # Resize the logo to fit inside A1 exactly
+    img.width = col_pixels
+    img.height = row_pixels
+
+    # Anchor to A1
     img.anchor = 'A1'
 
     ws.add_image(img)
