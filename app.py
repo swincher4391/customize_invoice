@@ -10,6 +10,10 @@ from openpyxl.styles import Alignment
 import smtplib
 from email.message import EmailMessage
 from PIL import Image
+import time
+from collections import OrderedDict
+from datetime import datetime, timezone
+from dateutil import parser
 
 app = Flask(__name__)
 
@@ -18,6 +22,11 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 TEMPLATE_PATH = "invoice-watermarked.xlsx"
 notion = NotionClient(auth=NOTION_TOKEN)
+
+# Simple in-memory cache of processed events
+# Using OrderedDict to limit memory usage (keeps only most recent 100 events)
+PROCESSED_EVENTS = OrderedDict()
+MAX_CACHE_SIZE = 100
 
 # === UTILITIES ===
 def send_email(recipient_email, subject, body, attachment_paths):
@@ -123,6 +132,17 @@ def insert_watermark_background(ws):
         with open("watermark.png", 'rb') as img_file:
             ws._background = img_file.read()
 
+def is_stale_event(event_time, max_age_minutes=5):
+    """Check if an event is too old to process"""
+    try:
+        event_datetime = parser.parse(event_time)
+        current_time = datetime.now(timezone.utc)
+        time_diff = (current_time - event_datetime).total_seconds() / 60
+        return time_diff > max_age_minutes, time_diff
+    except Exception as e:
+        print(f"⚠️ Error parsing event time: {e}")
+        return False, 0  # If we can't parse the time, assume it's not stale
+
 # === WEBHOOK ===
 @app.route("/preview_webhook", methods=["POST"])
 def handle_preview_request():
@@ -132,6 +152,28 @@ def handle_preview_request():
         data = request.json
         print("🚀 Raw incoming data from Tally:", data)
 
+        # Extract event ID and creation time for idempotency check
+        event_id = data.get('eventId')
+        event_time = data.get('createdAt')
+
+        # Check if we've already processed this event
+        if event_id in PROCESSED_EVENTS:
+            print(f"✅ Skipping already processed event: {event_id}")
+            return '', 204
+        
+        # Check if the event is too old (stale)
+        is_stale, time_diff = is_stale_event(event_time)
+        if is_stale:
+            print(f"⚠️ Skipping stale event from {time_diff:.1f} minutes ago: {event_id}")
+            
+            # Even though we're skipping processing, mark it as processed to prevent future retries
+            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
+                PROCESSED_EVENTS.popitem(last=False)
+            PROCESSED_EVENTS[event_id] = time.time()
+            
+            return '', 204
+
+        # Extract fields from the webhook payload
         fields_list = data.get('data', {}).get('fields', [])
         fields = {}
 
@@ -205,6 +247,12 @@ def handle_preview_request():
                     attachment_paths=[tmp.name]
                 )
                 print(f"✅ Email sent successfully to {email}")
+                
+                # Mark this event as processed with a timestamp
+                if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
+                    PROCESSED_EVENTS.popitem(last=False)
+                PROCESSED_EVENTS[event_id] = time.time()
+                
             except Exception as e:
                 print(f"⚠️ Failed to send email: {e}")
                 return jsonify({"error": "Failed to send email"}), 500
@@ -224,6 +272,14 @@ def handle_preview_request():
                     print(f"✅ Removed temporary file: {file_path}")
             except Exception as e:
                 print(f"⚠️ Error removing temporary file {file_path}: {e}")
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Simple health check endpoint"""
+    return jsonify({
+        "status": "ok",
+        "processed_events": len(PROCESSED_EVENTS),
+    })
 
 if __name__ == "__main__":
     app.run(debug=True)
