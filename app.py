@@ -9,6 +9,7 @@ from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.styles import Font, Alignment
 import smtplib
 from email.message import EmailMessage
+from PIL import Image
 
 app = Flask(__name__)
 
