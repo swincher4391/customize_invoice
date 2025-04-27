@@ -139,15 +139,17 @@ def handle_preview_request():
         wb.save(tmp.name)
         tmp_path = tmp.name
 
-
-# ✉️ Send email to the form-submitted email
+    # Send email
     send_email(
-    recipient_email=email,
-    subject="Your Custom Invoice Preview is Ready!",
-    body=f"Hello {business_name},\n\nThank you for your order! Please find your customized invoice attached.\n\nBest regards,\nSwincher Creative",
-    attachment_path=tmp_path
-)
+        recipient_email=email,
+        subject="Your Custom Invoice Preview is Ready!",
+        body=f"Hello {business_name},\n\nThank you for your order! Please find your customized invoice attached.\n\nBest regards,\nSwincher Creative",
+        attachment_path=tmp_path
+    )
+
+    # 🛠 CORRECTLY INDENTED:
     return send_file(tmp_path, as_attachment=True, download_name=f"{business_name}_invoice_preview.xlsx")
+
 
 if __name__ == "__main__":
     app.run(debug=True)
