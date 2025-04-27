@@ -191,9 +191,9 @@ def handle_preview_request():
 
     # Convert .xlsx to .html
     html_file_path = tmp_path.replace(".xlsx", ".html")
-    with open(html_file_path, "w") as f:
+    with open(html_file_path, "w", encoding="utf-8") as f:
         xlsx2html(tmp_path, f)
-    
+
     # Convert .html to .pdf
     pdf_file_path = tmp_path.replace(".xlsx", ".pdf")
     pdfkit.from_file(html_file_path, pdf_file_path)
