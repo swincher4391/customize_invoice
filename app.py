@@ -86,8 +86,8 @@ def handle_preview_request():
     # Extract fields
     fields = {field["label"]: field["value"] for field in data.get("data", {}).get("fields", [])}
     business_name = fields.get('Business Name', 'Your Business')
-    address1 = fields.get('Business Address Line 1', '')
-    address2 = fields.get('Business Address Line 2', '')
+    address1 = fields.get('Address', '')
+    address2 = fields.get('City, State ZIP', '')
     phone = fields.get('Phone Number', '')
     email = fields.get('Email Address', '')
     tax_percentage = fields.get('Tax Percentage', '7')
