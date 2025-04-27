@@ -17,7 +17,30 @@ TEMPLATE_PATH = "invoice-watermarked.xlsx"
 notion = NotionClient(auth=NOTION_TOKEN)
 
 # === UTILITIES ===
+def send_email(recipient_email, subject, body, attachment_path):
+    """Send an email with the given attachment."""
+    smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+    smtp_port = int(os.getenv('SMTP_PORT', 587))
+    smtp_user = os.getenv('SMTP_USER')
+    smtp_pass = os.getenv('SMTP_PASS')
 
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = smtp_user
+    msg['To'] = recipient_email
+    msg.set_content(body)
+
+    with open(attachment_path, 'rb') as f:
+        file_data = f.read()
+        file_name = os.path.basename(attachment_path)
+
+    msg.add_attachment(file_data, maintype='application', subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename=file_name)
+
+    with smtplib.SMTP(smtp_server, smtp_port) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
+        
 def remove_background(image_path, tolerance=30):
     """Remove background color based on pixel (0,0) and make transparent."""
     img = Image.open(image_path).convert("RGBA")
@@ -115,7 +138,18 @@ def handle_preview_request():
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         wb.save(tmp.name)
         tmp_path = tmp.name
+# Save to temp file
+with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+    wb.save(tmp.name)
+    tmp_path = tmp.name
 
+# ✉️ Send email to the form-submitted email
+send_email(
+    recipient_email=email,
+    subject="Your Custom Invoice Preview is Ready!",
+    body=f"Hello {business_name},\n\nThank you for your order! Please find your customized invoice attached.\n\nBest regards,\nSwincher Creative",
+    attachment_path=tmp_path
+)
     return send_file(tmp_path, as_attachment=True, download_name=f"{business_name}_invoice_preview.xlsx")
 
 if __name__ == "__main__":
