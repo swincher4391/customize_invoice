@@ -7,3 +7,4 @@ pillow
 notion-client
 xlsx2html 
 pdfkit
+pymupdf
