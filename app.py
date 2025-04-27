@@ -10,8 +10,6 @@ from openpyxl.styles import Alignment
 import smtplib
 from email.message import EmailMessage
 from PIL import Image
-import pdfkit
-import shutil
 
 app = Flask(__name__)
 
@@ -41,8 +39,6 @@ def send_email(recipient_email, subject, body, attachment_paths):
 
         if attachment_path.endswith('.xlsx'):
             maintype, subtype = 'application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        elif attachment_path.endswith('.pdf'):
-            maintype, subtype = 'application', 'pdf'
         else:
             maintype, subtype = 'application', 'octet-stream'
 
@@ -77,7 +73,7 @@ def protect_workbook(workbook, password='etsysc123'):
         sheet.protection.objects = True
         sheet.protection.scenarios = True
         
-        # Other options you might want to set:
+        # Other protection options
         sheet.protection.selectLockedCells = False
         sheet.protection.selectUnlockedCells = False
         sheet.protection.formatCells = False
@@ -108,6 +104,12 @@ def insert_logo(ws, image_bytes):
     img.anchor = 'A1'
 
     ws.add_image(img)
+    
+    # Clean up the temporary file
+    try:
+        os.unlink(temp_logo.name)
+    except:
+        pass
 
 def insert_watermark_background(ws):
     if os.path.exists("watermark.png"):
@@ -156,13 +158,6 @@ def handle_preview_request():
     processed_logo.save(logo_bytes, format="PNG")
     logo_bytes.seek(0)
 
-    # Save logo to a file for later use in the PDF
-    logo_path = tempfile.mktemp(suffix=".png")
-    with open(logo_path, 'wb') as f:
-        f.write(logo_bytes.getvalue())
-    
-    logo_bytes.seek(0)  # Reset position for Excel use
-
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     ws = wb.active
 
@@ -186,85 +181,20 @@ def handle_preview_request():
         wb.save(tmp.name)
         tmp_path = tmp.name
 
-    # Create HTML file directly
-    html_file_path = tmp_path.replace(".xlsx", ".html")
-    with open(html_file_path, "w", encoding="utf-8") as f:
-        f.write(f"""<!DOCTYPE html>
-        <html>
-        <head>
-            <title>Invoice for {business_name}</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 30px; }}
-                .header {{ display: flex; justify-content: space-between; }}
-                .company-info {{ margin-bottom: 30px; }}
-                table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
-                table, th, td {{ border: 1px solid #ddd; }}
-                th, td {{ padding: 8px; text-align: left; }}
-                .totals {{ text-align: right; margin-top: 20px; }}
-                .currency {{ text-align: center; margin-top: 30px; font-style: italic; }}
-                .logo {{ position: absolute; top: 50px; right: 50px; max-width: 150px; max-height: 100px; }}
-            </style>
-        </head>
-        <body>
-            <img src="file://{logo_path}" class="logo">
-            <div class="header">
-                <h1>INVOICE</h1>
-            </div>
-            <div class="company-info">
-                <p><strong>{business_name}</strong><br/>
-                {address1}<br/>
-                {address2}<br/>
-                {phone}<br/>
-                {email}</p>
-            </div>
-            <table>
-                <tr>
-                    <th>Item</th>
-                    <th>Description</th>
-                    <th>Quantity</th>
-                    <th>Unit Price</th>
-                    <th>Amount</th>
-                </tr>
-                <tr>
-                    <td colspan="5" style="text-align: center;">Items will be filled in the Excel document</td>
-                </tr>
-            </table>
-            <div class="totals">
-                <p>Subtotal: ___________</p>
-                <p>Tax ({tax_percentage}%): ___________</p>
-                <p><strong>Total: ___________</strong></p>
-            </div>
-            <div class="currency">
-                All amounts shown in {currency}
-            </div>
-        </body>
-        </html>
-        """)
-
-    # Generate PDF with pdfkit (logo already in HTML)
-    pdf_path = tmp_path.replace('.xlsx', '.pdf')
-    try:
-        pdfkit.from_file(html_file_path, pdf_path)
-    except Exception as e:
-        print(f"⚠️ Error generating PDF: {e}")
-        # Create a simple PDF if conversion fails
-        with open(pdf_path, "w") as f:
-            f.write(f"Invoice for {business_name}")
-
     try:
         send_email(
             recipient_email=email,
             subject="Your Custom Invoice is Ready!",
-            body="Please find attached both the Excel and PDF versions.",
-            attachment_paths=[tmp_path, pdf_path]
+            body="Please find attached your custom Excel invoice template. You can fill in the item details and the calculations will be performed automatically.",
+            attachment_paths=[tmp_path]
         )
     except Exception as e:
         print(f"⚠️ Failed to send email: {e}")
+        return jsonify({"error": "Failed to send email"}), 500
 
     # Clean up temporary files
     try:
-        os.unlink(logo_path)
-        os.unlink(html_file_path)
+        os.unlink(tmp_path)
     except Exception as e:
         print(f"⚠️ Error cleaning up temporary files: {e}")
 
