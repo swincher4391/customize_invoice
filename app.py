@@ -198,9 +198,7 @@ def handle_preview_request():
     pdf_file_path = tmp_path.replace(".xlsx", ".pdf")
     pdfkit.from_file(html_file_path, pdf_file_path)
 
-==
     # Send email (even if email fails, still return file)
-# Send email (even if email fails, still return file)
     try:
         send_email(
             recipient_email=email,
