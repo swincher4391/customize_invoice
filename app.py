@@ -212,7 +212,7 @@ def handle_preview_request():
         print(f"⚠️ Failed to send email: {e}")
 
 
-    return 
+    return '',204
 
 if __name__ == "__main__":
     app.run(debug=True)
