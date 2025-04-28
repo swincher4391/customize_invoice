@@ -9,3 +9,4 @@ xlsx2html
 pdfkit
 pymupdf
 python-dateutil
+apscheduler
