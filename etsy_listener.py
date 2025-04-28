@@ -1169,19 +1169,33 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(func=check_etsy_orders, trigger="interval", minutes=5, id="check_orders")
 scheduler.add_job(func=check_etsy_refunds, trigger="interval", hours=24, id="check_refunds")
 
-# Start the scheduler when the Flask app starts
-@app.before_first_request
-def initialize():
-    """Initialize the application on first request"""
-    scheduler.start()
-    logger.info("Started background scheduler")
+# Initialize function to start the scheduler
+def initialize_app():
+    """Initialize the application"""
+    if not scheduler.running:
+        scheduler.start()
+        logger.info("Started background scheduler")
     logger.info("Application initialized successfully")
 
-# When running under Gunicorn, we need a different way to start the scheduler
+# For Flask 2.2+, use this pattern instead of before_first_request
+# Create a blueprint for initialization
+from flask import Blueprint
+
+init_blueprint = Blueprint('init_app', __name__)
+
+@init_blueprint.before_app_first_request
+def initialize_before_first_request():
+    """Initialize before the first request (for Flask 2.2+)"""
+    initialize_app()
+
+# Register the blueprint with the app
+app.register_blueprint(init_blueprint)
+
+# When running under Gunicorn, we need to initialize immediately
 # This is for production deployment
 if os.environ.get('GUNICORN_WORKER', '0') == '1':
     logger.info("Running under Gunicorn, initializing scheduler immediately")
-    scheduler.start()
+    initialize_app()
 
 # Shutdown the scheduler when the app exits
 import atexit
