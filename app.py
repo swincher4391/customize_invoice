@@ -37,7 +37,7 @@ PROCESSED_EVENTS = OrderedDict()
 MAX_CACHE_SIZE = 100
 
 # === UTILITIES ===
-def send_email(recipient_email, subject, body, attachment_paths, business_name=''):
+def send_email(recipient_email, subject, body, attachment_paths, business_name='',brand_id=''):
     """Send email with invoice template"""
     smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     smtp_port = int(os.getenv('SMTP_PORT', 587))
@@ -181,86 +181,63 @@ def remove_background(image_file, tolerance=50):
     return img
 
 def update_notion_database(fields):
-    """Updates the Notion database with preview information"""
+    """Write the Brand-ID row (create or update)"""
     if not NOTION_TOKEN or not DATABASE_ID:
         logger.warning("⚠️ Notion credentials not set, skipping database update")
         return None
-    
-    try:
-        # Initialize Notion client
-        notion = NotionClient(auth=NOTION_TOKEN)
-        
-        # Extract relevant information
-        business_name = fields.get('Company Name', 'Unknown')
-        email = fields.get('Email', '')
-        brand_id = fields.get('BrandID', '')
-        logo_url = fields.get('Logo URL', '')
-        timestamp = datetime.now().isoformat()
-        
-        # Prepare the data for Notion
-        properties = {
-            "BrandID":    {"title": [{"text": {"content": brand_id}}]},  # TITLE
-            "EtsyAccount": {"rich_text": [{"text": {"content": fields.get('Etsy Account', '')}}]},
-            "LogoURL":    {"rich_text": [{"text": {"content": logo_url}}]},
-            "Company":    {"rich_text": [{"text": {"content": business_name}}]},
-            "Email":      {"email": email},
-            "Phone":      {"phone_number": phone},
-            "Address":    {"rich_text": [{"text": {"content": address1}}]},
-            "CityStateZip": {"rich_text": [{"text": {"content": address2}}]},
-            "Email Sent": {"checkbox": False},
-            "Timestamp":  {"date": {"start": timestamp}}
-        }
 
-        
-        # Add other fields if they exist
-        if fields.get('Address'):
-            properties["Address"] = {"rich_text": [{"text": {"content": fields.get('Address', '')}}]}
-        
-        if fields.get('City, State ZIP'):
-            properties["City, State ZIP"] = {"rich_text": [{"text": {"content": fields.get('City, State ZIP', '')}}]}
-        
-        if fields.get('Phone'):
-            properties["Phone"] = {"phone_number": fields.get('Phone', '')}
-        
-        if fields.get('Tax %'):
-            properties["Tax %"] = {"number": float(fields.get('Tax %', 7))}
-        
-        if fields.get('Currency'):
-            properties["Currency"] = {"select": {"name": fields.get('Currency', 'USD')}}
-        
-        # Check if this email already exists in the database
-        existing_pages = notion.databases.query(
+    try:
+        notion = NotionClient(auth=NOTION_TOKEN)
+
+        # --- extract everything once -----------------------------------------
+        brand_id      = fields.get('BrandID', '')
+        etsy_account  = fields.get('Etsy Account', '')
+        logo_url      = fields.get('Logo URL', '')
+        business_name = fields.get('Company Name', 'Unknown')
+        email         = fields.get('Email', '')
+        phone         = fields.get('Phone', '')
+        address1      = fields.get('Address', '')
+        address2      = fields.get('City, State ZIP', '')
+        timestamp     = datetime.now().isoformat()
+        # ---------------------------------------------------------------------
+
+        # --- build the property dict – keys MUST match Notion column names ---
+        properties = {
+            "BrandID":       {"title":    [{"text": {"content": brand_id}}]},
+            "EtsyAccount":   {"rich_text":[{"text": {"content": etsy_account}}]},
+            "LogoURL":       {"rich_text":[{"text": {"content": logo_url}}]},
+            "Company":       {"rich_text":[{"text": {"content": business_name}}]},
+            "Email":         {"email":     email},
+            "Phone":         {"phone_number": phone},
+            "Address":       {"rich_text":[{"text": {"content": address1}}]},
+            "CityStateZip":  {"rich_text":[{"text": {"content": address2}}]},
+            "Email Sent":    {"checkbox":  False},
+            "Timestamp":     {"date":     {"start": timestamp}}
+        }
+        # ---------------------------------------------------------------------
+
+        # upsert by Email
+        existing = notion.databases.query(
             database_id=DATABASE_ID,
-            filter={
-                "property": "Email",
-                "email": {
-                    "equals": email
-                }
-            }
-        ).get("results", [])
-        
-        if existing_pages:
-            # Update existing page
-            notion.pages.update(
-                page_id=existing_pages[0]["id"],
-                properties=properties
-            )
-            page_id = existing_pages[0]["id"]
-            logger.info(f"✅ Updated existing Notion entry for {business_name}")
+            filter={"property": "Email", "email": {"equals": email}}
+        )["results"]
+
+        if existing:
+            notion.pages.update(page_id=existing[0]["id"], properties=properties)
+            page_id = existing[0]["id"]
+            logger.info(f"✅ Updated BrandID row for {business_name}")
         else:
-            # Create new page
-            response = notion.pages.create(
-                parent={"database_id": DATABASE_ID},
-                properties=properties
-            )
-            page_id = response["id"]
-            logger.info(f"✅ Created new Notion entry for {business_name}")
-        
+            resp    = notion.pages.create(parent={"database_id": DATABASE_ID},
+                                          properties=properties)
+            page_id = resp["id"]
+            logger.info(f"✅ Created BrandID row for {business_name}")
+
         return page_id
-            
+
     except Exception as e:
         logger.error(f"⚠️ Error updating Notion database: {e}")
         return None
+
         
 def protect_workbook(workbook, password='etsysc123'):
     """Apply protection to Excel workbook"""
