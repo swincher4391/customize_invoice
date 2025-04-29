@@ -37,7 +37,8 @@ PROCESSED_EVENTS = OrderedDict()
 MAX_CACHE_SIZE = 100
 
 # === UTILITIES ===
-def send_email(recipient_email, subject, body, attachment_paths, business_name='',brand_id=''):
+# Fix for email HTML content with undefined fields
+def send_email(recipient_email, subject, body, attachment_paths, business_name='', brand_id=''):
     """Send email with invoice template"""
     smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     smtp_port = int(os.getenv('SMTP_PORT', 587))
@@ -110,7 +111,7 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
                     <li>Free updates for 1 year</li>
                 </ul>
                 
-                <p><strong>Important:</strong> When purchasing on Etsy, please include your BrandID in the order notes: <strong>BrandID: {fields.get('BrandID', '')}</strong></p>
+                <p><strong>Important:</strong> When purchasing on Etsy, please include your BrandID in the order notes: <strong>BrandID: {brand_id}</strong></p>
             </div>
             <div class="footer">
                 <p>Questions? Need help? Reply to this email!</p>
@@ -180,65 +181,95 @@ def remove_background(image_file, tolerance=50):
     img.putdata(new_data)
     return img
 
+# Fix for Notion database property types
 def update_notion_database(fields):
-    """Write the Brand-ID row (create or update)"""
+    """Updates the Notion database with preview information"""
     if not NOTION_TOKEN or not DATABASE_ID:
         logger.warning("⚠️ Notion credentials not set, skipping database update")
         return None
-
+    
     try:
+        # Initialize Notion client
         notion = NotionClient(auth=NOTION_TOKEN)
-
-        # --- extract everything once -----------------------------------------
-        brand_id      = fields.get('BrandID', '')
-        etsy_account  = fields.get('Etsy Account', '')
-        logo_url      = fields.get('Logo URL', '')
+        
+        # Extract relevant information
         business_name = fields.get('Company Name', 'Unknown')
-        email         = fields.get('Email', '')
-        phone         = fields.get('Phone', '')
-        address1      = fields.get('Address', '')
-        address2      = fields.get('City, State ZIP', '')
-        timestamp     = datetime.now().isoformat()
-        # ---------------------------------------------------------------------
-
-        # --- build the property dict – keys MUST match Notion column names ---
+        email = fields.get('Email', '')
+        brand_id = fields.get('BrandID', '')
+        logo_url = fields.get('Logo URL', '')
+        timestamp = datetime.now().isoformat()
+        
+        # Prepare the data for Notion - match Notion's expected field types
         properties = {
-            "BrandID":       {"title":    [{"text": {"content": brand_id}}]},
-            "EtsyAccount":   {"rich_text":[{"text": {"content": etsy_account}}]},
-            "LogoURL":       {"rich_text":[{"text": {"content": logo_url}}]},
-            "Company":       {"rich_text":[{"text": {"content": business_name}}]},
-            "Email":         {"email":     email},
-            "Phone":         {"phone_number": phone},
-            "Address":       {"rich_text":[{"text": {"content": address1}}]},
-            "CityStateZip":  {"rich_text":[{"text": {"content": address2}}]},
-            "Email Sent":    {"checkbox":  False},
-            "Timestamp":     {"date":     {"start": timestamp}}
+            "Name": {"title": [{"text": {"content": business_name}}]},
+            "Email": {"email": email},
+            "Timestamp": {"date": {"start": timestamp}},
+            "Validated": {"checkbox": True},
+            "Excel Sent": {"checkbox": False}  # Will be updated later
         }
-        # ---------------------------------------------------------------------
-
-        # upsert by Email
-        existing = notion.databases.query(
+        
+        # Add BrandID as rich_text
+        if brand_id:
+            properties["BrandID"] = {"rich_text": [{"text": {"content": brand_id}}]}
+        
+        # Add Logo URL as rich_text
+        if logo_url:
+            properties["Logo URL"] = {"rich_text": [{"text": {"content": logo_url}}]}
+        
+        # Add other fields if they exist, use the correct property types
+        if fields.get('Address'):
+            properties["Address"] = {"rich_text": [{"text": {"content": fields.get('Address', '')}}]}
+        
+        if fields.get('City, State ZIP'):
+            properties["City, State ZIP"] = {"rich_text": [{"text": {"content": fields.get('City, State ZIP', '')}}]}
+        
+        if fields.get('Phone'):
+            properties["Phone"] = {"phone_number": fields.get('Phone', '')}
+        
+        if fields.get('Tax %'):
+            try:
+                tax_value = float(fields.get('Tax %', 7))
+                properties["Tax %"] = {"number": tax_value}
+            except ValueError:
+                properties["Tax %"] = {"number": 7}
+        
+        if fields.get('Currency'):
+            properties["Currency"] = {"select": {"name": fields.get('Currency', 'USD')}}
+        
+        # Check if this email already exists in the database
+        existing_pages = notion.databases.query(
             database_id=DATABASE_ID,
-            filter={"property": "Email", "email": {"equals": email}}
-        )["results"]
-
-        if existing:
-            notion.pages.update(page_id=existing[0]["id"], properties=properties)
-            page_id = existing[0]["id"]
-            logger.info(f"✅ Updated BrandID row for {business_name}")
+            filter={
+                "property": "Email",
+                "email": {
+                    "equals": email
+                }
+            }
+        ).get("results", [])
+        
+        if existing_pages:
+            # Update existing page
+            notion.pages.update(
+                page_id=existing_pages[0]["id"],
+                properties=properties
+            )
+            page_id = existing_pages[0]["id"]
+            logger.info(f"✅ Updated existing Notion entry for {business_name}")
         else:
-            resp    = notion.pages.create(parent={"database_id": DATABASE_ID},
-                                          properties=properties)
-            page_id = resp["id"]
-            logger.info(f"✅ Created BrandID row for {business_name}")
-
+            # Create new page
+            response = notion.pages.create(
+                parent={"database_id": DATABASE_ID},
+                properties=properties
+            )
+            page_id = response["id"]
+            logger.info(f"✅ Created new Notion entry for {business_name}")
+        
         return page_id
-
+            
     except Exception as e:
         logger.error(f"⚠️ Error updating Notion database: {e}")
         return None
-
-        
+     
 def protect_workbook(workbook, password='etsysc123'):
     """Apply protection to Excel workbook"""
     for sheet in workbook.worksheets:
@@ -312,7 +343,7 @@ def is_stale_event(event_time, max_age_minutes=5):
         logger.error(f"⚠️ Error parsing event time: {e}")
         return False, 0  # If we can't parse the time, assume it's not stale
 
-# === WEBHOOK ROUTE ===
+# Fix for webhook handler to use the updated functions
 @app.route("/preview_webhook", methods=["POST"])
 def handle_preview_request():
     """Handle webhook from Tally form for preview generation"""
@@ -428,14 +459,14 @@ def handle_preview_request():
         # Update the Notion database with customer info
         notion_page_id = update_notion_database(fields=fields)
 
-        # Send the email with the preview
+        # Send the email with the preview - pass brand_id explicitly
         email_sent = send_email(
-        recipient_email=email,
-        subject="Your Invoice Template Preview",
-        body=f"Preview attached.\nBrandID: {brand_id}",
-        attachment_paths=[tmp.name],
-        business_name=business_name,
-        brand_id=brand_id          # new param
+            recipient_email=email,
+            subject="Your Invoice Template Preview",
+            body=f"Please find attached your preview. Your BrandID is: {brand_id}. Use this when purchasing the full version.",
+            attachment_paths=[tmp.name],
+            business_name=business_name,
+            brand_id=brand_id  # Pass the brand_id explicitly
         )
         
         if not email_sent:
@@ -454,10 +485,10 @@ def handle_preview_request():
             try:
                 notion = NotionClient(auth=NOTION_TOKEN)
                 notion.pages.update(
-                page_id=notion_page_id,
-                properties={
-                    "Email Sent": {"checkbox": True}
-                }
+                    page_id=notion_page_id,
+                    properties={
+                        "Excel Sent": {"checkbox": True}
+                    }
                 )
                 logger.info("✅ Updated Excel Sent status in Notion")
             except Exception as e:
