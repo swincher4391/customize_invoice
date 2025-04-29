@@ -199,17 +199,18 @@ def update_notion_database(fields):
         
         # Prepare the data for Notion
         properties = {
-        "BrandID":    {"title": [{"text": {"content": brand_id}}]},  # TITLE
-        "EtsyAccount": {"rich_text": [{"text": {"content": fields.get('Etsy Account', '')}}]},
-        "LogoURL":    {"rich_text": [{"text": {"content": logo_url}}]},
-        "Company":    {"rich_text": [{"text": {"content": business_name}}]},
-        "Email":      {"email": email},
-        "Phone":      {"phone_number": phone},
-        "Address":    {"rich_text": [{"text": {"content": address1}}]},
-        "CityStateZip": {"rich_text": [{"text": {"content": address2}}]},
-        "Email Sent": {"checkbox": False},
-        "Timestamp":  {"date": {"start": timestamp}}
+            "BrandID":    {"title": [{"text": {"content": brand_id}}]},  # TITLE
+            "EtsyAccount": {"rich_text": [{"text": {"content": fields.get('Etsy Account', '')}}]},
+            "LogoURL":    {"rich_text": [{"text": {"content": logo_url}}]},
+            "Company":    {"rich_text": [{"text": {"content": business_name}}]},
+            "Email":      {"email": email},
+            "Phone":      {"phone_number": phone},
+            "Address":    {"rich_text": [{"text": {"content": address1}}]},
+            "CityStateZip": {"rich_text": [{"text": {"content": address2}}]},
+            "Email Sent": {"checkbox": False},
+            "Timestamp":  {"date": {"start": timestamp}}
         }
+
         
         # Add other fields if they exist
         if fields.get('Address'):
@@ -475,10 +476,10 @@ def handle_preview_request():
             try:
                 notion = NotionClient(auth=NOTION_TOKEN)
                 notion.pages.update(
-                    page_id=notion_page_id,
-                    properties={
-                        "Excel Sent": {"checkbox": True}
-                    }
+                page_id=notion_page_id,
+                properties={
+                    "Email Sent": {"checkbox": True}
+                }
                 )
                 logger.info("✅ Updated Excel Sent status in Notion")
             except Exception as e:
