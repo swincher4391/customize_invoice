@@ -37,7 +37,6 @@ PROCESSED_EVENTS = OrderedDict()
 MAX_CACHE_SIZE = 100
 
 # === UTILITIES ===
-# Fix for email HTML content with undefined fields
 def send_email(recipient_email, subject, body, attachment_paths, business_name='', brand_id=''):
     """Send email with invoice template"""
     smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
@@ -181,9 +180,8 @@ def remove_background(image_file, tolerance=50):
     img.putdata(new_data)
     return img
 
-# Fix for Notion database property types
 def update_notion_database(fields):
-    """Updates the Notion database with preview information"""
+    """Updates the Notion database with preview information using the exact property names"""
     if not NOTION_TOKEN or not DATABASE_ID:
         logger.warning("⚠️ Notion credentials not set, skipping database update")
         return None
@@ -197,44 +195,43 @@ def update_notion_database(fields):
         email = fields.get('Email', '')
         brand_id = fields.get('BrandID', '')
         logo_url = fields.get('Logo URL', '')
+        address = fields.get('Address', '')
+        city_state_zip = fields.get('City, State ZIP', '')
+        phone = fields.get('Phone', '')
         timestamp = datetime.now().isoformat()
         
-        # Prepare the data for Notion - match Notion's expected field types
+        # Prepare the data for Notion using the exact property names from the screenshot
         properties = {
-            "Name": {"title": [{"text": {"content": business_name}}]},
+            # EtsyAccount is the title field (indicated by "Aa" in the screenshot)
+            "EtsyAccount": {"title": [{"text": {"content": business_name}}]},
             "Email": {"email": email},
             "Timestamp": {"date": {"start": timestamp}},
-            "Validated": {"checkbox": True},
-            "Excel Sent": {"checkbox": False}  # Will be updated later
+            "Email Sent": {"checkbox": False}  # Will be updated later
         }
         
         # Add BrandID as rich_text
         if brand_id:
             properties["BrandID"] = {"rich_text": [{"text": {"content": brand_id}}]}
         
-        # Add Logo URL as rich_text
+        # Add LogoURL as rich_text
         if logo_url:
-            properties["Logo URL"] = {"rich_text": [{"text": {"content": logo_url}}]}
+            properties["LogoURL"] = {"rich_text": [{"text": {"content": logo_url}}]}
         
-        # Add other fields if they exist, use the correct property types
-        if fields.get('Address'):
-            properties["Address"] = {"rich_text": [{"text": {"content": fields.get('Address', '')}}]}
+        # Add Company as rich_text
+        if business_name:
+            properties["Company"] = {"rich_text": [{"text": {"content": business_name}}]}
         
-        if fields.get('City, State ZIP'):
-            properties["City, State ZIP"] = {"rich_text": [{"text": {"content": fields.get('City, State ZIP', '')}}]}
+        # Add Address as rich_text
+        if address:
+            properties["Address"] = {"rich_text": [{"text": {"content": address}}]}
         
-        if fields.get('Phone'):
-            properties["Phone"] = {"phone_number": fields.get('Phone', '')}
+        # Add CityStateZip as rich_text
+        if city_state_zip:
+            properties["CityStateZip"] = {"rich_text": [{"text": {"content": city_state_zip}}]}
         
-        if fields.get('Tax %'):
-            try:
-                tax_value = float(fields.get('Tax %', 7))
-                properties["Tax %"] = {"number": tax_value}
-            except ValueError:
-                properties["Tax %"] = {"number": 7}
-        
-        if fields.get('Currency'):
-            properties["Currency"] = {"select": {"name": fields.get('Currency', 'USD')}}
+        # Add Phone as phone_number
+        if phone:
+            properties["Phone"] = {"phone_number": phone}
         
         # Check if this email already exists in the database
         existing_pages = notion.databases.query(
@@ -269,7 +266,31 @@ def update_notion_database(fields):
     except Exception as e:
         logger.error(f"⚠️ Error updating Notion database: {e}")
         return None
-     
+
+def update_email_sent_status(page_id):
+    """Update the 'Email Sent' checkbox to True"""
+    if not NOTION_TOKEN:
+        logger.warning("⚠️ Notion credentials not set, cannot update email sent status")
+        return False
+    
+    try:
+        # Initialize Notion client
+        notion = NotionClient(auth=NOTION_TOKEN)
+        
+        # Update the page with Email Sent = True
+        notion.pages.update(
+            page_id=page_id,
+            properties={
+                "Email Sent": {"checkbox": True}
+            }
+        )
+        
+        logger.info("✅ Updated Email Sent status in Notion")
+        return True
+    except Exception as e:
+        logger.error(f"⚠️ Error updating Email Sent status: {e}")
+        return False
+        
 def protect_workbook(workbook, password='etsysc123'):
     """Apply protection to Excel workbook"""
     for sheet in workbook.worksheets:
@@ -343,7 +364,7 @@ def is_stale_event(event_time, max_age_minutes=5):
         logger.error(f"⚠️ Error parsing event time: {e}")
         return False, 0  # If we can't parse the time, assume it's not stale
 
-# Fix for webhook handler to use the updated functions
+# === WEBHOOK ROUTE ===
 @app.route("/preview_webhook", methods=["POST"])
 def handle_preview_request():
     """Handle webhook from Tally form for preview generation"""
@@ -480,19 +501,9 @@ def handle_preview_request():
         
         logger.info(f"✅ Successfully processed preview request for {business_name} (BrandID: {brand_id})")
         
-        # Then after successfully sending the email, update the Excel Sent field
+        # Then after successfully sending the email, update the Email Sent field
         if notion_page_id:
-            try:
-                notion = NotionClient(auth=NOTION_TOKEN)
-                notion.pages.update(
-                    page_id=notion_page_id,
-                    properties={
-                        "Excel Sent": {"checkbox": True}
-                    }
-                )
-                logger.info("✅ Updated Excel Sent status in Notion")
-            except Exception as e:
-                logger.error(f"⚠️ Error updating Excel Sent status: {e}")
+            update_email_sent_status(notion_page_id)
 
         return '', 204
         
