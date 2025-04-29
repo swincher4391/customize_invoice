@@ -453,11 +453,12 @@ def handle_preview_request():
 
         # Send the email with the preview
         email_sent = send_email(
-            recipient_email=email,
-            subject="Your Invoice Template Preview",
-            body=f"Please find attached your preview. Your BrandID is: {brand_id}. Use this when purchasing the full version.",
-            attachment_paths=[tmp.name],
-            business_name=business_name
+        recipient_email=email,
+        subject="Your Invoice Template Preview",
+        body=f"Preview attached.\nBrandID: {brand_id}",
+        attachment_paths=[tmp.name],
+        business_name=business_name,
+        brand_id=brand_id          # new param
         )
         
         if not email_sent:
