@@ -46,7 +46,7 @@ notion = NotionClient(auth=NOTION_TOKEN)
 PROCESSED_EVENTS = OrderedDict()
 MAX_CACHE_SIZE = 100
 
-def get_property_value(properties, name, type_name):
+ef get_property_value(properties, name, type_name):
     """Extract values from Notion property objects"""
     if name not in properties:
         return ""
@@ -63,9 +63,13 @@ def get_property_value(properties, name, type_name):
         return prop.get("phone_number", "")
     elif type_name == "checkbox":
         return prop.get("checkbox", False)
+    elif type_name == "number":
+        return prop.get("number", 0)  # Return the number value, default to 0
+    elif type_name == "select" and "select" in prop:
+        return prop["select"].get("name", "") if prop["select"] else ""
     
     return ""
-      
+
 # Define a list of words to ignore in the brand ID generation
 IGNORE_WORDS = {
     # Articles
