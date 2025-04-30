@@ -1017,7 +1017,7 @@ def health_check():
         "timestamp": datetime.now().isoformat()
     })
 
-@app.route("/run-processor", methods=["POST","GET"])
+@app.route("/run-processor", methods=["GET"])
 def manual_run():
     """Endpoint to manually trigger the processing job"""
     try:
@@ -1033,7 +1033,13 @@ def manual_run():
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }), 500
-
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({
+      "service": "BrandIDProcessor",
+      "status": "running",
+      "endpoints": ["/health", "/run-processor", "/preview_webhook"]
+    }), 200
 # === MAIN ===
 if __name__ == "__main__":
     # Start the scheduler
