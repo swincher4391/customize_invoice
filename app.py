@@ -733,9 +733,10 @@ def process_pending_records():
             try:
                 page_id = record["id"]
                 properties = record["properties"]
-                
+
+                logger.debug(f"Properties for page {page_id}: {list(properties.keys())}")
                 # Extract business information
-                business_name =  get_property_value(properties, "Company", "title")
+                business_name =  get_property_value(properties, "Company", "rich_text")
                 email = get_property_value(properties, "Email", "email")
                 phone = get_property_value(properties, "Phone", "phone_number") 
                 address = get_property_value(properties, "Address", "rich_text")
