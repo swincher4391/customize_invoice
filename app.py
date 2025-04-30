@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, send_file, jsonify
 from notion_client import Client as NotionClient
 import requests
 import os
@@ -15,15 +15,19 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from dateutil import parser
 import uuid
-import hashlib
 import logging
+from apscheduler.schedulers.background import BackgroundScheduler
 
-# Configure logging
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("brandid_processor.log"),
+        logging.StreamHandler()
+    ]
 )
-logger = logging.getLogger('tally_webhook')
+logger = logging.getLogger("BrandIDProcessor")
 
 app = Flask(__name__)
 
@@ -31,20 +35,135 @@ app = Flask(__name__)
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 TEMPLATE_PATH = "invoice-watermarked.xlsx"
+SCHEDULER_INTERVAL = int(os.getenv("SCHEDULER_INTERVAL", "60"))  # Default to 60 minutes
+
+# Initialize Notion client
+notion = NotionClient(auth=NOTION_TOKEN)
 
 # Simple in-memory cache of processed events
+# Using OrderedDict to limit memory usage (keeps only most recent 100 events)
 PROCESSED_EVENTS = OrderedDict()
 MAX_CACHE_SIZE = 100
 
+# === BRAND ID GENERATION ===
+def generate_brand_id(business_name, email):
+    """Generate a unique Brand ID following these specific rules:
+    
+    Format: BRAND-{4-char name code}-{4-digit email code}
+    
+    Name code algorithm:
+    1. For each word, take the first letter to build an initial string
+    2. For each word, find first consonant and add after its initial
+    3. Limit to 4 characters
+    4. Don't repeat letters (use Y instead of X if a second X is needed)
+    5. If no consonants, just take the left 4 chars of company name
+    
+    Examples:
+    - "Acme Design Studio" → ACDS (A + C + D + S)
+    - "Quick Shop" → QCSH (Q + C + S + H)
+    - "AB" → ABXY (A + X + B + Y)
+    - "Professional Services" → PRSV (P + R + S + V)
+    - "AEIOU" → AEIO (just first 4 chars because no consonants)
+    - "XYZ Corp" → XYCR (X + Y + C + R)
+    """
+    if not business_name or not isinstance(business_name, str) or business_name.strip() == "":
+        business_name = "Unknown"
+    
+    if not email or not isinstance(email, str):
+        email = "example@example.com"
+    
+    # Define vowels for consonant detection
+    vowels = ['a', 'e', 'i', 'o', 'u']
+    
+    # Split into words and filter out empty strings
+    words = [word for word in business_name.split() if word]
+    if not words:
+        words = ["Unknown"]
+    
+    # Check if there are any consonants in the entire name
+    has_consonants = False
+    for char in business_name:
+        if char.isalpha() and char.lower() not in vowels:
+            has_consonants = True
+            break
+    
+    # If no consonants, just take the first 4 characters of the business name
+    if not has_consonants:
+        name_part = business_name[:4].upper()
+        # Pad with X, Y, Z if needed
+        if len(name_part) < 4:
+            padding_chars = ['X', 'Y', 'Z']
+            i = 0
+            while len(name_part) < 4:
+                name_part += padding_chars[i % 3]
+                i += 1
+    else:
+        # Initialize result and used letters set
+        name_part = ""
+        used_letters = set()
+        
+        # Alternate adding initial and first consonant for each word
+        for word in words:
+            if len(name_part) >= 4:
+                break
+            
+            # Add the initial (first letter)
+            initial = word[0].upper()
+            if initial not in used_letters:
+                name_part += initial
+                used_letters.add(initial)
+            
+            if len(name_part) >= 4:
+                break
+                
+            # Find first consonant in the word
+            consonant_found = False
+            for char in word:
+                if char.isalpha() and char.lower() not in vowels and char.upper() not in used_letters:
+                    name_part += char.upper()
+                    used_letters.add(char.upper())
+                    consonant_found = True
+                    break
+            
+            # If no unused consonant found, add an unused padding character
+            if not consonant_found and len(name_part) < 4:
+                for padding_char in ['X', 'Y', 'Z']:
+                    if padding_char not in used_letters:
+                        name_part += padding_char
+                        used_letters.add(padding_char)
+                        break
+        
+        # Trim to 4 characters if longer
+        name_part = name_part[:4]
+        
+        # Pad with unused characters if shorter than 4
+        padding_chars = ['X', 'Y', 'Z']
+        i = 0
+        while len(name_part) < 4:
+            padding_char = padding_chars[i % 3]
+            if padding_char not in used_letters:
+                name_part += padding_char
+                used_letters.add(padding_char)
+            i += 1
+    
+    # Calculate ASCII value of email address
+    email_ascii_sum = sum(ord(c) for c in email)
+    email_part = str(email_ascii_sum)[-4:].zfill(4)  # Get rightmost 4 digits
+    
+    # Construct final Brand ID
+    brand_id = f"BRAND-{name_part}-{email_part}"
+    
+    logger.info(f"Generated Brand ID for {business_name}: {brand_id}")
+    return brand_id
+
 # === UTILITIES ===
 def send_email(recipient_email, subject, body, attachment_paths, business_name='', brand_id=''):
-    """Send email with invoice template"""
+    """Send email with attachments and formatted HTML body"""
     smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     smtp_port = int(os.getenv('SMTP_PORT', 587))
     smtp_user = os.getenv('SMTP_USER')
     smtp_pass = os.getenv('SMTP_PASS')
     sender_name = os.getenv('SENDER_NAME', 'Invoice Generator')
-    etsy_shop_id = os.getenv('ETSY_SHOP_ID', '')
 
     # Create a more sophisticated email
     msg = EmailMessage()
@@ -58,13 +177,20 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
     msg['To'] = recipient_email
     
     # Add more headers to improve deliverability
+    # Add a unique Message-ID
     domain = smtp_user.split('@')[-1]
     msg['Message-ID'] = f"<{uuid.uuid4()}@{domain}>"
+    
+    # Add Date header
     msg['Date'] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
+    
+    # Add X-Mailer header 
     msg['X-Mailer'] = 'InvoiceCustomizer Service'
+    
+    # Add a List-Unsubscribe header (helps with spam prevention)
     msg['List-Unsubscribe'] = f'<mailto:{smtp_user}?subject=Unsubscribe>'
     
-    # Create personalized HTML content for preview
+    # Create personalized HTML content
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -78,43 +204,44 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
             .header {{ background-color: #f8f9fa; padding: 15px; border-bottom: 1px solid #e9ecef; }}
             .content {{ padding: 20px 0; }}
             .footer {{ font-size: 12px; color: #6c757d; padding-top: 20px; border-top: 1px solid #e9ecef; }}
-            .cta {{ background-color: #0066cc; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; }}
+            .brand-id-box {{ background-color: #f0f8ff; border: 1px solid #b0c4de; padding: 15px; border-radius: 5px; margin: 20px 0; text-align: center; }}
+            .brand-id {{ font-size: 24px; font-weight: bold; letter-spacing: 1px; color: #0056b3; }}
+            .instructions {{ background-color: #fffaf0; border-left: 4px solid #ffa500; padding: 10px; margin: 15px 0; }}
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h2>Your Custom Invoice Preview is Ready!</h2>
+                <h2>Your Custom Invoice Template & Brand ID</h2>
             </div>
             <div class="content">
                 <p>Hello{' ' + business_name if business_name else ''},</p>
                 
-                <p>Thank you for requesting a preview of our Invoice Template! The attached preview contains a watermark and shows how your branding looks in the template.</p>
+                <p>Thank you for using our Invoice Generator service! Your custom Excel invoice template is now ready.</p>
                 
-                <p>This preview includes:</p>
+                <div class="brand-id-box">
+                    <p>Your unique Brand ID is:</p>
+                    <p class="brand-id">{brand_id}</p>
+                </div>
+                
+                <div class="instructions">
+                    <p><strong>Important:</strong> Save this Brand ID for future purchases. When you buy additional templates on Etsy, include this Brand ID in your order notes to have them automatically customized with your business information.</p>
+                </div>
+                
+                <p>We've attached the spreadsheet to this email. You can fill in the item details, and the calculations will be performed automatically.</p>
+                
+                <p>This customized invoice includes:</p>
                 <ul>
-                    <li>Your business information</li>
-                    <li>Your logo</li>
-                    <li>A "PREVIEW ONLY" watermark</li>
+                    <li>Your business information and logo</li>
+                    <li>Customized tax rate</li>
+                    <li>Protected formulas to prevent accidental changes</li>
                 </ul>
                 
-                <p>To get the full, unwatermarked version with all features:</p>
-                
-                <a href="https://www.etsy.com/shop/{etsy_shop_id}" class="cta">Purchase Full Version on Etsy</a>
-                
-                <p>The licensed version includes:</p>
-                <ul>
-                    <li>No watermarks</li>
-                    <li>Complete functionality</li>
-                    <li>Protected formulas</li>
-                    <li>Free updates for 1 year</li>
-                </ul>
-                
-                <p><strong>Important:</strong> When purchasing on Etsy, please include your BrandID in the order notes: <strong>BrandID: {brand_id}</strong></p>
+                <p>If you have any questions or need assistance, please reply to this email.</p>
             </div>
             <div class="footer">
-                <p>Questions? Need help? Reply to this email!</p>
                 <p>This is a transactional email sent to you because you submitted the Invoice Customization Form.</p>
+                <p>To unsubscribe from future emails, please reply with "Unsubscribe" in the subject line.</p>
             </div>
         </div>
     </body>
@@ -160,8 +287,6 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
             else:
                 logger.error(f"❌ All email attempts failed: {e}")
                 return False
-    
-    return False
 
 def remove_background(image_file, tolerance=50):
     """Remove background from logo image"""
@@ -180,58 +305,40 @@ def remove_background(image_file, tolerance=50):
     img.putdata(new_data)
     return img
 
-def update_notion_database(fields):
-    """Updates the Notion database with preview information using the exact property names"""
+def update_notion_database(fields, event_id=None):
+    """Updates the Notion database with preview information using existing fields"""
     if not NOTION_TOKEN or not DATABASE_ID:
         logger.warning("⚠️ Notion credentials not set, skipping database update")
-        return None
+        return
     
     try:
-        # Initialize Notion client
-        notion = NotionClient(auth=NOTION_TOKEN)
-        
         # Extract relevant information
         business_name = fields.get('Company Name', 'Unknown')
         email = fields.get('Email', '')
-        brand_id = fields.get('BrandID', '')
-        logo_url = fields.get('Logo URL', '')
-        address = fields.get('Address', '')
-        city_state_zip = fields.get('City, State ZIP', '')
-        phone = fields.get('Phone', '')
         timestamp = datetime.now().isoformat()
         
-        # Prepare the data for Notion using the exact property names from the screenshot
+        # Generate a unique Brand ID
+        brand_id = ""
+        if business_name and email:
+            brand_id = generate_brand_id(business_name, email)
+            fields['BrandID'] = brand_id
+        
+        # Prepare the data for Notion using only existing fields
         properties = {
-            # EtsyAccount is the title field (indicated by "Aa" in the screenshot)
-            "EtsyAccount": {"title": [{"text": {"content": business_name}}]},
+            "Name": {"title": [{"text": {"content": business_name}}]},
             "Email": {"email": email},
             "Timestamp": {"date": {"start": timestamp}},
-            "Email Sent": {"checkbox": False}  # Will be updated later
+            "Validated": {"checkbox": True},
+            "Excel Sent": {"checkbox": False}  # Will be updated to True when email is sent
         }
         
-        # Add BrandID as rich_text
+        # Add Brand ID to properties
         if brand_id:
             properties["BrandID"] = {"rich_text": [{"text": {"content": brand_id}}]}
         
-        # Add LogoURL as rich_text
-        if logo_url:
-            properties["LogoURL"] = {"rich_text": [{"text": {"content": logo_url}}]}
-        
-        # Add Company as rich_text
-        if business_name:
-            properties["Company"] = {"rich_text": [{"text": {"content": business_name}}]}
-        
-        # Add Address as rich_text
-        if address:
-            properties["Address"] = {"rich_text": [{"text": {"content": address}}]}
-        
-        # Add CityStateZip as rich_text
-        if city_state_zip:
-            properties["CityStateZip"] = {"rich_text": [{"text": {"content": city_state_zip}}]}
-        
-        # Add Phone as phone_number
-        if phone:
-            properties["Phone"] = {"phone_number": phone}
+        # If we have a company name, add it to the Company field
+        if fields.get('Company Name'):
+            properties["Company"] = {"rich_text": [{"text": {"content": fields.get('Company Name', '')}}]}
         
         # Check if this email already exists in the database
         existing_pages = notion.databases.query(
@@ -266,33 +373,9 @@ def update_notion_database(fields):
     except Exception as e:
         logger.error(f"⚠️ Error updating Notion database: {e}")
         return None
-
-def update_email_sent_status(page_id):
-    """Update the 'Email Sent' checkbox to True"""
-    if not NOTION_TOKEN:
-        logger.warning("⚠️ Notion credentials not set, cannot update email sent status")
-        return False
-    
-    try:
-        # Initialize Notion client
-        notion = NotionClient(auth=NOTION_TOKEN)
-        
-        # Update the page with Email Sent = True
-        notion.pages.update(
-            page_id=page_id,
-            properties={
-                "Email Sent": {"checkbox": True}
-            }
-        )
-        
-        logger.info("✅ Updated Email Sent status in Notion")
-        return True
-    except Exception as e:
-        logger.error(f"⚠️ Error updating Email Sent status: {e}")
-        return False
         
 def protect_workbook(workbook, password='etsysc123'):
-    """Apply protection to Excel workbook"""
+    """Apply protection to Excel workbook to prevent accidental changes"""
     for sheet in workbook.worksheets:
         # Enable protection with specific options
         sheet.protection.sheet = True
@@ -319,7 +402,7 @@ def protect_workbook(workbook, password='etsysc123'):
         sheet.protection.drawings = True  # Specifically protects drawings/images
 
 def insert_logo(ws, image_bytes):
-    """Insert logo into Excel worksheet"""
+    """Insert logo into worksheet"""
     # Create a temporary file that won't be deleted until program exit
     temp_logo = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     temp_logo.write(image_bytes)
@@ -348,7 +431,7 @@ def insert_logo(ws, image_bytes):
         return None
 
 def insert_watermark_background(ws):
-    """Insert watermark into worksheet background"""
+    """Insert watermark into worksheet"""
     if os.path.exists("watermark.png"):
         with open("watermark.png", 'rb') as img_file:
             ws._background = img_file.read()
@@ -364,16 +447,262 @@ def is_stale_event(event_time, max_age_minutes=5):
         logger.error(f"⚠️ Error parsing event time: {e}")
         return False, 0  # If we can't parse the time, assume it's not stale
 
-# === WEBHOOK ROUTE ===
+def extract_notion_properties(page):
+    """Extract relevant properties from a Notion page"""
+    properties = page.get("properties", {})
+    fields = {}
+    
+    # Extract Company Name
+    title_property = next((prop_name for prop_name, prop in properties.items() 
+                         if prop.get("type") == "title"), None)
+    if title_property:
+        title_objects = properties[title_property].get("title", [])
+        if title_objects:
+            fields["Company Name"] = title_objects[0].get("plain_text", "")
+    
+    # Extract Email
+    email_property = next((prop_name for prop_name, prop in properties.items() 
+                         if prop.get("type") == "email"), None)
+    if email_property:
+        fields["Email"] = properties[email_property].get("email", "")
+    
+    # Extract Logo URL
+    for prop_name, prop in properties.items():
+        if prop.get("type") == "url" and "logo" in prop_name.lower():
+            fields["Logo URL"] = prop.get("url", "")
+        elif prop.get("type") == "rich_text" and "logo" in prop_name.lower():
+            rich_texts = prop.get("rich_text", [])
+            if rich_texts:
+                fields["Logo URL"] = rich_texts[0].get("plain_text", "")
+    
+    # Extract Address
+    for prop_name, prop in properties.items():
+        if prop.get("type") == "rich_text" and "address" in prop_name.lower():
+            rich_texts = prop.get("rich_text", [])
+            if rich_texts:
+                fields["Address"] = rich_texts[0].get("plain_text", "")
+    
+    # Extract City, State ZIP
+    for prop_name, prop in properties.items():
+        if prop.get("type") == "rich_text" and ("city" in prop_name.lower() or "zip" in prop_name.lower()):
+            rich_texts = prop.get("rich_text", [])
+            if rich_texts:
+                fields["City, State ZIP"] = rich_texts[0].get("plain_text", "")
+    
+    # Extract Phone
+    for prop_name, prop in properties.items():
+        if prop.get("type") == "phone_number" or (prop.get("type") == "rich_text" and "phone" in prop_name.lower()):
+            if prop.get("type") == "phone_number":
+                fields["Phone"] = prop.get("phone_number", "")
+            else:
+                rich_texts = prop.get("rich_text", [])
+                if rich_texts:
+                    fields["Phone"] = rich_texts[0].get("plain_text", "")
+    
+    # Extract Tax %
+    for prop_name, prop in properties.items():
+        if prop.get("type") == "number" and "tax" in prop_name.lower():
+            fields["Tax %"] = str(prop.get("number", 7))
+    
+    # Extract Currency
+    for prop_name, prop in properties.items():
+        if prop.get("type") == "select" and "currency" in prop_name.lower():
+            select = prop.get("select", {})
+            fields["Currency"] = select.get("name", "USD")
+        elif prop.get("type") == "rich_text" and "currency" in prop_name.lower():
+            rich_texts = prop.get("rich_text", [])
+            if rich_texts:
+                fields["Currency"] = rich_texts[0].get("plain_text", "USD")
+    
+    # Extract BrandID if it exists
+    for prop_name, prop in properties.items():
+        if prop.get("type") == "rich_text" and "brandid" in prop_name.lower():
+            rich_texts = prop.get("rich_text", [])
+            if rich_texts:
+                fields["BrandID"] = rich_texts[0].get("plain_text", "")
+    
+    return fields
+
+def process_template(fields):
+    """Generate a customized template based on customer fields"""
+    temp_files = []  # List to keep track of temporary files to clean up
+    
+    try:
+        business_name = fields.get("Company Name", "Your Business")
+        address1 = fields.get("Address", "")
+        address2 = fields.get("City, State ZIP", "")
+        phone = fields.get("Phone", "")
+        email = fields.get("Email", "")
+        tax_percentage = fields.get("Tax %", "7")
+        currency = fields.get("Currency", "USD")
+        logo_url = fields.get("Logo URL", "")
+        
+        if not logo_url:
+            logger.error("Logo URL missing!")
+            return None, temp_files
+        
+        # Download and process logo
+        logo_response = requests.get(logo_url)
+        if logo_response.status_code != 200:
+            logger.error(f"Failed to download logo from {logo_url}")
+            return None, temp_files
+        
+        processed_logo = remove_background(io.BytesIO(logo_response.content))
+        logo_bytes = io.BytesIO()
+        processed_logo.save(logo_bytes, format="PNG")
+        logo_bytes.seek(0)
+        
+        # Load template and customize
+        wb = openpyxl.load_workbook(TEMPLATE_PATH)
+        ws = wb.active
+        
+        insert_watermark_background(ws)
+        
+        # Insert business information
+        ws['A2'] = business_name
+        ws['A3'] = address1
+        ws['A4'] = address2
+        ws['A5'] = phone
+        ws['A6'] = email
+        ws['D30'] = f"Tax ({tax_percentage}%)"
+        ws['E30'] = f'=IF(NOT(IsGoogleSheets),E29*{float(tax_percentage)}/100,"GOOGLE SHEETS DETECTED")'
+        ws['C32'] = f"All amounts shown in {currency}"
+        ws.merge_cells('C32:E32')
+        ws['C32'].alignment = Alignment(horizontal='center', vertical='center')
+        
+        # Insert logo
+        logo_temp_path = insert_logo(ws, logo_bytes.read())
+        if logo_temp_path:
+            temp_files.append(logo_temp_path)
+        
+        # Apply protection
+        protect_workbook(wb)
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            temp_files.append(tmp.name)
+            return tmp.name, temp_files
+    
+    except Exception as e:
+        logger.error(f"Error processing template: {e}")
+        return None, temp_files
+
+def update_notion_with_brand_id(page_id, brand_id, email_sent=False):
+    """Update Notion record with Brand ID and email status"""
+    try:
+        properties = {
+            "BrandID": {"rich_text": [{"text": {"content": brand_id}}]}
+        }
+        
+        if email_sent:
+            properties["Excel Sent"] = {"checkbox": True}
+        
+        notion.pages.update(
+            page_id=page_id,
+            properties=properties
+        )
+        logger.info(f"✅ Updated Notion page {page_id} with Brand ID {brand_id}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to update Notion page {page_id}: {e}")
+        return False
+
+# === PROCESSING FUNCTION ===
+def process_pending_records():
+    """Process all Notion records that don't have a Brand ID yet"""
+    logger.info("Starting to process pending records...")
+    
+    try:
+        # Query for records without BrandID
+        results = notion.databases.query(
+            database_id=DATABASE_ID,
+            filter={
+                "property": "BrandID",
+                "rich_text": {
+                    "is_empty": True
+                }
+            }
+        ).get("results", [])
+        
+        logger.info(f"Found {len(results)} records without a Brand ID")
+        
+        for page in results:
+            page_id = page["id"]
+            logger.info(f"Processing page {page_id}")
+            
+            # Extract fields from the Notion page
+            fields = extract_notion_properties(page)
+            business_name = fields.get("Company Name", "Unknown Business")
+            email = fields.get("Email")
+            
+            if not email:
+                logger.warning(f"No email found for page {page_id}, skipping")
+                continue
+            
+            # Generate Brand ID
+            brand_id = generate_brand_id(business_name, email)
+            fields["BrandID"] = brand_id
+            logger.info(f"Generated Brand ID {brand_id} for {business_name}")
+            
+            # Process template
+            template_path, temp_files = process_template(fields)
+            if not template_path:
+                logger.error(f"Failed to generate template for {business_name}")
+                continue
+            
+            # Send email
+            email_success = send_email(
+                recipient_email=email,
+                subject="Your Custom Invoice Template & Brand ID",
+                body=f"Please find attached your custom Excel invoice template. Your Brand ID is: {brand_id}. Please save this ID for future template purchases.",
+                attachment_paths=[template_path],
+                business_name=business_name,
+                brand_id=brand_id
+            )
+            
+            # Update Notion record
+            update_notion_with_brand_id(page_id, brand_id, email_success)
+            
+            # Clean up temporary files
+            for file_path in temp_files:
+                try:
+                    if file_path and os.path.exists(file_path):
+                        os.unlink(file_path)
+                except Exception as e:
+                    logger.warning(f"Failed to remove temporary file {file_path}: {e}")
+                    
+            # Add a small delay between processing records to avoid rate limits
+            time.sleep(1)
+        
+        logger.info("Finished processing pending records")
+    
+    except Exception as e:
+        logger.error(f"Error in process_pending_records: {e}")
+
+# === SCHEDULER ===
+def start_scheduler():
+    """Start the background scheduler"""
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        process_pending_records, 
+        'interval', 
+        minutes=SCHEDULER_INTERVAL,
+        id='process_pending_records_job'
+    )
+    scheduler.start()
+    logger.info(f"Scheduler started, will run every {SCHEDULER_INTERVAL} minutes")
+    return scheduler
+
+# === WEBHOOK ===
 @app.route("/preview_webhook", methods=["POST"])
 def handle_preview_request():
-    """Handle webhook from Tally form for preview generation"""
     temp_files = []  # List to keep track of temporary files to clean up
     event_id = None
     
     try:
         data = request.json
-        logger.info("🚀 Raw incoming data from Tally")
+        logger.info("🚀 Raw incoming data from Tally:", data)
 
         # Extract event ID and creation time for idempotency check
         event_id = data.get('eventId')
@@ -386,7 +715,7 @@ def handle_preview_request():
         
         # If we received it before but didn't process it successfully, we'll try again
         if event_id in PROCESSED_EVENTS:
-            logger.info(f"⚠️ Retrying previously failed event: {event_id}")
+            logger.warning(f"⚠️ Retrying previously failed event: {event_id}")
         
         # Check if the event is too old (stale)
         is_stale, time_diff = is_stale_event(event_time)
@@ -426,18 +755,10 @@ def handle_preview_request():
         logo_url = fields.get('Upload your logo', '')
 
         if not logo_url:
-            logger.error("Logo upload missing!")
             return jsonify({"error": "Logo upload missing!"}), 400
 
-        # Generate BrandID using hash of business name, email and timestamp
-        brand_id = hashlib.md5(f"{business_name}-{email}-{time.time()}".encode()).hexdigest()[:8].upper()
-        fields['BrandID'] = brand_id
-        fields['Logo URL'] = logo_url
-
-        # Download and process logo
         logo_response = requests.get(logo_url)
         if logo_response.status_code != 200:
-            logger.error("Failed to download logo!")
             return jsonify({"error": "Failed to download logo"}), 400
 
         processed_logo = remove_background(io.BytesIO(logo_response.content))
@@ -445,14 +766,11 @@ def handle_preview_request():
         processed_logo.save(logo_bytes, format="PNG")
         logo_bytes.seek(0)
 
-        # Load and customize the Excel template
         wb = openpyxl.load_workbook(TEMPLATE_PATH)
         ws = wb.active
 
-        # Add watermark
         insert_watermark_background(ws)
 
-        # Add company information
         ws['A2'] = business_name
         ws['A3'] = address1
         ws['A4'] = address2
@@ -469,7 +787,6 @@ def handle_preview_request():
         if logo_temp_path:
             temp_files.append(logo_temp_path)
 
-        # Apply workbook protection
         protect_workbook(wb)
 
         # Save the workbook to a temporary file
@@ -477,33 +794,50 @@ def handle_preview_request():
             wb.save(tmp.name)
             temp_files.append(tmp.name)  # Add to cleanup list
 
-        # Update the Notion database with customer info
+        # Generate a Brand ID for the customer
+        brand_id = generate_brand_id(business_name, email)
+        fields['BrandID'] = brand_id
+
+        # Update Notion database with fields and Brand ID
         notion_page_id = update_notion_database(fields=fields)
 
-        # Send the email with the preview - pass brand_id explicitly
-        email_sent = send_email(
-            recipient_email=email,
-            subject="Your Invoice Template Preview",
-            body=f"Please find attached your preview. Your BrandID is: {brand_id}. Use this when purchasing the full version.",
-            attachment_paths=[tmp.name],
-            business_name=business_name,
-            brand_id=brand_id  # Pass the brand_id explicitly
-        )
-        
-        if not email_sent:
-            logger.error("Failed to send email!")
-            return jsonify({"error": "Failed to send email"}), 500
+        # Send the email
+        try:
+            send_email(
+                recipient_email=email,
+                subject="Your Custom Invoice Template & Brand ID",
+                body="Please find attached your custom Excel invoice template. You can fill in the item details and the calculations will be performed automatically.",
+                attachment_paths=[tmp.name],
+                business_name=business_name,
+                brand_id=brand_id
+            )
             
-        # Mark this event as successfully processed
-        if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
-            PROCESSED_EVENTS.popitem(last=False)
-        PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": True}
-        
-        logger.info(f"✅ Successfully processed preview request for {business_name} (BrandID: {brand_id})")
-        
-        # Then after successfully sending the email, update the Email Sent field
-        if notion_page_id:
-            update_email_sent_status(notion_page_id)
+            # Mark this event as successfully processed
+            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
+                PROCESSED_EVENTS.popitem(last=False)
+            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": True}
+            
+            logger.info(f"✅ Successfully processed event: {event_id}")
+            # Then after successfully sending the email, update the Excel Sent field
+            if notion_page_id:
+                try:
+                    notion.pages.update(
+                        page_id=notion_page_id,
+                        properties={
+                            "Excel Sent": {"checkbox": True}
+                        }
+                    )
+                    logger.info(f"✅ Updated Excel Sent status in Notion")
+                except Exception as e:
+                    logger.error(f"⚠️ Error updating Excel Sent status: {e}")
+        except Exception as e:
+            # Mark as received but not successfully processed
+            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
+                PROCESSED_EVENTS.popitem(last=False)
+            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": False}
+            
+            logger.error(f"⚠️ Failed to send email: {e}")
+            return jsonify({"error": "Failed to send email"}), 500
 
         return '', 204
         
@@ -527,16 +861,44 @@ def handle_preview_request():
             except Exception as e:
                 logger.error(f"⚠️ Error removing temporary file {file_path}: {e}")
 
-# Health check endpoint
+# === ROUTES ===
 @app.route("/health", methods=["GET"])
 def health_check():
     """Simple health check endpoint"""
     return jsonify({
         "status": "ok",
         "processed_events": len(PROCESSED_EVENTS),
-        "processed_details": {k: v.get("processed", False) for k, v in list(PROCESSED_EVENTS.items())[-5:]},
+        "processed_details": {k: v.get("processed", False) for k, v in PROCESSED_EVENTS.items()},
         "timestamp": datetime.now().isoformat()
     })
 
+@app.route("/run-processor", methods=["POST"])
+def manual_run():
+    """Endpoint to manually trigger the processing job"""
+    try:
+        process_pending_records()
+        return jsonify({
+            "status": "success",
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Error in manual run: {e}")
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+# === MAIN ===
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Start the scheduler
+    scheduler = start_scheduler()
+    
+    # Run once at startup
+    process_pending_records()
+    
+    # Start the Flask app
+    try:
+        app.run(debug=True)
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
