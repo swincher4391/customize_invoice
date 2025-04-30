@@ -624,7 +624,9 @@ def get_logo_from_notion(page_id):
             if files:
                 file = files[0]
                 # external vs file URL
-                url = file["external"]["url"] if file["type"] == "external" else file["file"]["url"]
+                url = (file["external"]["url"]
+                       if file["type"] == "external"
+                       else file["file"]["url"])
                 resp = requests.get(url)
                 if resp.ok:
                     logger.info(f"✅ Pulled logo from DB property for page {page_id}")
@@ -635,7 +637,9 @@ def get_logo_from_notion(page_id):
         for block in blocks:
             if block["type"] == "image":
                 img = block["image"]
-                url = img["external"]["url"] if img["type"] == "external" else img["file"]["url"]
+                url = (img["external"]["url"]
+                       if img["type"] == "external"
+                       else img["file"]["url"])
                 resp = requests.get(url)
                 if resp.ok:
                     logger.info(f"✅ Pulled logo from image block for page {page_id}")
@@ -647,27 +651,6 @@ def get_logo_from_notion(page_id):
 
     return None
 
-        
-        # Check for logo in properties
-        page = notion.pages.retrieve(page_id=page_id)
-        if "properties" in page:
-            for prop_name, prop_data in page["properties"].items():
-                if prop_data.get("type") == "files" and prop_data.get("files"):
-                    for file in prop_data["files"]:
-                        if file["type"] == "file":
-                            image_url = file["file"]["url"]
-                            try:
-                                response = requests.get(image_url)
-                                if response.status_code == 200:
-                                    return response.content
-                            except Exception as e:
-                                logger.error(f"Error downloading logo from property: {e}")
-        
-        logger.warning(f"No logo found in page {page_id}")
-        return None
-    except Exception as e:
-        logger.error(f"Error retrieving logo from Notion: {e}")
-        return None
 
 def update_notion_with_brand_id(page_id, brand_id, email_sent=False):
     """Update Notion record with Brand ID and email status"""
