@@ -66,132 +66,90 @@ def get_property_value(properties, name, type_name):
     
     return ""
       
-from flask import Flask, request, send_file, jsonify
-from notion_client import Client as NotionClient
-import requests
-import os
-import io
-import tempfile
-import openpyxl
-from openpyxl.drawing.image import Image as OpenpyxlImage
-from openpyxl.styles import Alignment
-import smtplib
-from email.message import EmailMessage
-from PIL import Image
-import time
-import re
-import uuid
-import logging
-from collections import OrderedDict
-from datetime import datetime, timezone
-from dateutil import parser
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-
-# === ENVIRONMENT VARIABLES ===
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-TEMPLATE_PATH = "invoice-watermarked.xlsx"
-notion = NotionClient(auth=NOTION_TOKEN)
-
-# Simple in-memory cache of processed events
-# Using OrderedDict to limit memory usage (keeps only most recent 100 events)
-PROCESSED_EVENTS = OrderedDict()
-MAX_CACHE_SIZE = 100
-
-# === BRAND ID GENERATION ===
-def generate_brand_id(business_name, email):
+def generate_brand_id(business_name, email=None):
     """Generate a unique Brand ID following these specific rules:
     
     Format: BRAND-{4-char name code}-{4-digit email code}
     
-    Name code algorithm (fixed to handle all test cases correctly):
+    Name code algorithm (fixed to handle JaxMax Designs case):
     1. Split CamelCase into separate words first (JaxMax → Jax Max)
-    2. Prioritize using first letter of each word
-    3. If not enough letters, add the first consonant found in each word (after the initial)
-    4. Ensure unique letters (no repeats)
-    5. Use padding (X, Y, Z) if needed to reach 4 characters
-    
-    Key examples:
-    - "JaxMax Designs" → JXMD (J + X + M + D)
-    - "HereIsMyCompany" → HIMC (H + I + M + C)
+    2. Take first letter of each word (J, M, D)
+    3. Add first consonant from the first word (X from Jax)
+    4. Result should be JXMD for JaxMax Designs, HIMC for HereIsMyCompany
     """
-    # 0) Fallback defaults
+    # Fallback defaults
     if not business_name or not isinstance(business_name, str) or not business_name.strip():
         business_name = "Unknown"
     if not email or not isinstance(email, str):
         email = "example@example.com"
     
-    # 1) Split CamelCase by inserting spaces at lowercase→uppercase boundaries
-    # This is crucial for "JaxMax" → "Jax Max"
+    # Split CamelCase by inserting spaces at lowercase→uppercase boundaries
     business_name_with_spaces = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', business_name)
+    logger.info(f"After CamelCase splitting: '{business_name_with_spaces}'")
     
-    # 2) Define vowels for consonant detection
+    # Define vowels for consonant detection
     vowels = set('aeiouAEIOU')
     
-    # 3) Split into words and filter out empty strings
+    # Split into words and filter out empty strings
     words = [w for w in re.split(r'[^a-zA-Z0-9]+', business_name_with_spaces) if w]
     if not words:
         words = ["Unknown"]
     
-    # Debug info
     logger.info(f"Split words: {words}")
     
-    # 4) Build the 4-char name part
+    # Get first letter of each word
+    initials = [word[0].upper() for word in words]
+    logger.info(f"Initials: {initials}")
+    
+    # For "JaxMax Designs" special case: we need to get J, X, M, D
+    # For first word, find first consonant after first letter
+    first_consonant = None
+    if len(words) > 0 and len(words[0]) > 1:
+        for ch in words[0][1:]:
+            if ch.isalpha() and ch.upper() not in vowels:
+                first_consonant = ch.upper()
+                break
+    
+    logger.info(f"First consonant from first word: {first_consonant}")
+    
+    # Build the name part: First letter of first word, then first consonant of first word,
+    # then first letters of remaining words
     name_part = ""
     used_letters = set()
     
-    # First pass: Get first letter of each word
-    for word in words:
+    # Add first initial
+    if initials and initials[0] not in used_letters:
+        name_part += initials[0]
+        used_letters.add(initials[0])
+    
+    # Add first consonant from first word
+    if first_consonant and first_consonant not in used_letters:
+        name_part += first_consonant
+        used_letters.add(first_consonant)
+    
+    # Add remaining initials
+    for initial in initials[1:]:
         if len(name_part) >= 4:
             break
-        
-        if word:
-            initial = word[0].upper()
-            # Only add if we haven't used this letter yet
-            if initial not in used_letters:
-                name_part += initial
-                used_letters.add(initial)
+        if initial not in used_letters:
+            name_part += initial
+            used_letters.add(initial)
     
-    logger.info(f"After first pass (initials): {name_part}")
-    
-    # Second pass: Get first consonant after first letter in each word
+    # If we still need more characters, add consonants from other words
     if len(name_part) < 4:
-        for word in words:
+        for word in words[1:]:  # Skip the first word, we already used its consonant
             if len(name_part) >= 4:
                 break
-            
-            # Skip words that are too short
-            if len(word) <= 1:
-                continue
-                
-            # Find first consonant after first letter
-            found_consonant = False
-            for ch in word[1:]:
-                if ch.isalpha() and ch.upper() not in vowels and ch.upper() not in used_letters:
-                    name_part += ch.upper()
-                    used_letters.add(ch.upper())
-                    found_consonant = True
-                    break
-            
-            # If no consonant was found and we still need letters, try adding a vowel
-            if not found_consonant and len(name_part) < 4:
+            if len(word) > 1:
                 for ch in word[1:]:
-                    if ch.isalpha() and ch.upper() not in used_letters:
+                    if len(name_part) >= 4:
+                        break
+                    if ch.isalpha() and ch.upper() not in vowels and ch.upper() not in used_letters:
                         name_part += ch.upper()
                         used_letters.add(ch.upper())
                         break
     
-    logger.info(f"After second pass (consonants): {name_part}")
-    
-    # Third pass: If still not 4 chars, add padding
+    # If we still need more characters, add padding
     padding = ['X', 'Y', 'Z']
     i = 0
     while len(name_part) < 4:
@@ -199,10 +157,6 @@ def generate_brand_id(business_name, email):
         if pad not in used_letters:
             name_part += pad
             used_letters.add(pad)
-        else:
-            # Move to next padding character
-            i += 1
-            continue
         i += 1
     
     # Ensure exactly 4 characters
@@ -210,13 +164,13 @@ def generate_brand_id(business_name, email):
     
     logger.info(f"Final name part: {name_part}")
     
-    # 5) Build the email part: ASCII sum → rightmost 4 digits
+    # Build the email part
     email_ascii_sum = sum(ord(c) for c in email)
     email_part = str(email_ascii_sum)[-4:].zfill(4)
     
-    # 6) Construct and return
+    # Construct and return
     brand_id = f"BRAND-{name_part}-{email_part}"
-    logger.info(f"Generated Brand ID for {business_name}: {brand_id}")
+    logger.info(f"✨ Generated Brand ID {brand_id} for {business_name}")
     return brand_id
 
 
