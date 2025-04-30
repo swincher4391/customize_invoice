@@ -613,29 +613,47 @@ def process_template(fields, page_id):
         return None, temp_files
 
 def get_logo_from_notion(page_id):
-    """Extract logo image directly from Notion page blocks"""
+    """
+    Try, in order:
+      1) The "Logo" Files & media property on the page
+      2) Any image block in the page body
+    Returns raw bytes or None.
+    """
     try:
+        # 1) Retrieve the full page so we can inspect its properties
+        page = notion.pages.retrieve(page_id=page_id)
+        props = page.get("properties", {})
+
+        # 2) Look explicitly for your "Logo" column
+        logo_prop = props.get("Logo")
+        if logo_prop and logo_prop.get("type") == "files":
+            files = logo_prop.get("files", [])
+            if files:
+                file = files[0]
+                # external vs file URL
+                url = file["external"]["url"] if file["type"] == "external" else file["file"]["url"]
+                resp = requests.get(url)
+                if resp.ok:
+                    logger.info(f"✅ Pulled logo from DB property for page {page_id}")
+                    return resp.content
+
+        # 3) Fallback: scan the page’s child blocks for any image block
         blocks = notion.blocks.children.list(block_id=page_id).get("results", [])
-        
         for block in blocks:
             if block["type"] == "image":
-                image_block = block["image"]
-                if image_block["type"] == "file":
-                    image_url = image_block["file"]["url"]
-                    try:
-                        response = requests.get(image_url)
-                        if response.status_code == 200:
-                            return response.content
-                    except Exception as e:
-                        logger.error(f"Error downloading logo from Notion URL: {e}")
-                elif image_block["type"] == "external":
-                    image_url = image_block["external"]["url"]
-                    try:
-                        response = requests.get(image_url)
-                        if response.status_code == 200:
-                            return response.content
-                    except Exception as e:
-                        logger.error(f"Error downloading logo from external URL: {e}")
+                img = block["image"]
+                url = img["external"]["url"] if img["type"] == "external" else img["file"]["url"]
+                resp = requests.get(url)
+                if resp.ok:
+                    logger.info(f"✅ Pulled logo from image block for page {page_id}")
+                    return resp.content
+
+        logger.warning(f"No logo found for page {page_id}")
+    except Exception as e:
+        logger.error(f"Error retrieving logo from Notion: {e}")
+
+    return None
+
         
         # Check for logo in properties
         page = notion.pages.retrieve(page_id=page_id)
