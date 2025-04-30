@@ -46,7 +46,7 @@ notion = NotionClient(auth=NOTION_TOKEN)
 PROCESSED_EVENTS = OrderedDict()
 MAX_CACHE_SIZE = 100
 
-ef get_property_value(properties, name, type_name):
+def get_property_value(properties, name, type_name):
     """Extract values from Notion property objects"""
     if name not in properties:
         return ""
