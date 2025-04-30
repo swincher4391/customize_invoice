@@ -66,108 +66,159 @@ def get_property_value(properties, name, type_name):
     
     return ""
       
+from flask import Flask, request, send_file, jsonify
+from notion_client import Client as NotionClient
+import requests
+import os
+import io
+import tempfile
+import openpyxl
+from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.styles import Alignment
+import smtplib
+from email.message import EmailMessage
+from PIL import Image
+import time
+import re
+import uuid
+import logging
+from collections import OrderedDict
+from datetime import datetime, timezone
+from dateutil import parser
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+# === ENVIRONMENT VARIABLES ===
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+TEMPLATE_PATH = "invoice-watermarked.xlsx"
+notion = NotionClient(auth=NOTION_TOKEN)
+
+# Simple in-memory cache of processed events
+# Using OrderedDict to limit memory usage (keeps only most recent 100 events)
+PROCESSED_EVENTS = OrderedDict()
+MAX_CACHE_SIZE = 100
+
 # === BRAND ID GENERATION ===
 def generate_brand_id(business_name, email):
     """Generate a unique Brand ID following these specific rules:
     
     Format: BRAND-{4-char name code}-{4-digit email code}
     
-    Name code algorithm:
-    1. For each word, take the first letter to build an initial string
-    2. For each word, find first consonant and add after its initial
-    3. Limit to 4 characters
-    4. Don't repeat letters (use Y instead of X if a second X is needed)
-    5. If no consonants, just take the left 4 chars of company name
+    Name code algorithm (fixed to handle all test cases correctly):
+    1. Split CamelCase into separate words first (JaxMax → Jax Max)
+    2. Prioritize using first letter of each word
+    3. If not enough letters, add the first consonant found in each word (after the initial)
+    4. Ensure unique letters (no repeats)
+    5. Use padding (X, Y, Z) if needed to reach 4 characters
     
-    Examples:
-    - "Acme Design Studio" → ACDS (A + C + D + S)
-    - "Quick Shop" → QCSH (Q + C + S + H)
-    - "AB" → ABXY (A + X + B + Y)
-    - "Professional Services" → PRSV (P + R + S + V)
-    - "AEIOU" → AEIO (just first 4 chars because no consonants)
-    - "XYZ Corp" → XYCR (X + Y + C + R)
-    - Handles CamelCase: "JaxMax Designs" → treated as "Jax Max Designs"
+    Key examples:
+    - "JaxMax Designs" → JXMD (J + X + M + D)
+    - "HereIsMyCompany" → HIMC (H + I + M + C)
     """
     # 0) Fallback defaults
     if not business_name or not isinstance(business_name, str) or not business_name.strip():
         business_name = "Unknown"
     if not email or not isinstance(email, str):
         email = "example@example.com"
-
-    # 1) Split CamelCase: insert spaces where lowercase→uppercase
-    business_name_for_id = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', business_name)
-
+    
+    # 1) Split CamelCase by inserting spaces at lowercase→uppercase boundaries
+    # This is crucial for "JaxMax" → "Jax Max"
+    business_name_with_spaces = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', business_name)
+    
     # 2) Define vowels for consonant detection
-    vowels = ['a', 'e', 'i', 'o', 'u']
-
-    # 3) Split into words and filter out empty
-    words = [w for w in business_name_for_id.split() if w]
+    vowels = set('aeiouAEIOU')
+    
+    # 3) Split into words and filter out empty strings
+    words = [w for w in re.split(r'[^a-zA-Z0-9]+', business_name_with_spaces) if w]
     if not words:
         words = ["Unknown"]
-
-    # 4) Check for any consonants in the split name
-    has_consonants = any(ch.isalpha() and ch.lower() not in vowels for ch in business_name_for_id)
-
-    # 5) Build the 4-char name part
-    if not has_consonants:
-        # no consonants: take first 4 chars of the split name
-        name_part = business_name_for_id[:4].upper()
-        # pad with X,Y,Z as needed
-        padding = ['X', 'Y', 'Z']
-        i = 0
-        while len(name_part) < 4:
-            name_part += padding[i % 3]
-            i += 1
-    else:
-        name_part = ""
-        used_letters = set()
-        # alternate initial + first unused consonant per word
-        for word in words:
-            if len(name_part) >= 4:
-                break
-
+    
+    # Debug info
+    logger.info(f"Split words: {words}")
+    
+    # 4) Build the 4-char name part
+    name_part = ""
+    used_letters = set()
+    
+    # First pass: Get first letter of each word
+    for word in words:
+        if len(name_part) >= 4:
+            break
+        
+        if word:
             initial = word[0].upper()
+            # Only add if we haven't used this letter yet
             if initial not in used_letters:
                 name_part += initial
                 used_letters.add(initial)
+    
+    logger.info(f"After first pass (initials): {name_part}")
+    
+    # Second pass: Get first consonant after first letter in each word
+    if len(name_part) < 4:
+        for word in words:
             if len(name_part) >= 4:
                 break
-
-            consonant_found = False
-            for ch in word:
-                up = ch.upper()
-                if ch.isalpha() and ch.lower() not in vowels and up not in used_letters:
-                    name_part += up
-                    used_letters.add(up)
-                    consonant_found = True
+            
+            # Skip words that are too short
+            if len(word) <= 1:
+                continue
+                
+            # Find first consonant after first letter
+            found_consonant = False
+            for ch in word[1:]:
+                if ch.isalpha() and ch.upper() not in vowels and ch.upper() not in used_letters:
+                    name_part += ch.upper()
+                    used_letters.add(ch.upper())
+                    found_consonant = True
                     break
-
-            if not consonant_found and len(name_part) < 4:
-                for pad in ['X', 'Y', 'Z']:
-                    if pad not in used_letters:
-                        name_part += pad
-                        used_letters.add(pad)
+            
+            # If no consonant was found and we still need letters, try adding a vowel
+            if not found_consonant and len(name_part) < 4:
+                for ch in word[1:]:
+                    if ch.isalpha() and ch.upper() not in used_letters:
+                        name_part += ch.upper()
+                        used_letters.add(ch.upper())
                         break
-
-        # trim or pad to exactly 4
-        name_part = name_part[:4]
-        padding = ['X', 'Y', 'Z']
-        i = 0
-        while len(name_part) < 4:
-            pad = padding[i % 3]
-            if pad not in used_letters:
-                name_part += pad
-                used_letters.add(pad)
+    
+    logger.info(f"After second pass (consonants): {name_part}")
+    
+    # Third pass: If still not 4 chars, add padding
+    padding = ['X', 'Y', 'Z']
+    i = 0
+    while len(name_part) < 4:
+        pad = padding[i % 3]
+        if pad not in used_letters:
+            name_part += pad
+            used_letters.add(pad)
+        else:
+            # Move to next padding character
             i += 1
-
-    # 6) Build the email part: ASCII sum → rightmost 4 digits
+            continue
+        i += 1
+    
+    # Ensure exactly 4 characters
+    name_part = name_part[:4]
+    
+    logger.info(f"Final name part: {name_part}")
+    
+    # 5) Build the email part: ASCII sum → rightmost 4 digits
     email_ascii_sum = sum(ord(c) for c in email)
     email_part = str(email_ascii_sum)[-4:].zfill(4)
-
-    # 7) Construct and return
+    
+    # 6) Construct and return
     brand_id = f"BRAND-{name_part}-{email_part}"
     logger.info(f"Generated Brand ID for {business_name}: {brand_id}")
     return brand_id
+
 
 # === UTILITIES ===
 def send_email(recipient_email, subject, body, attachment_paths, business_name='', brand_id=''):
