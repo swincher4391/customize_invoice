@@ -556,8 +556,13 @@ def extract_notion_properties(page):
     
     # Extract Tax %
     for prop_name, prop in properties.items():
-        if prop.get("type") == "number" and "tax" in prop_name.lower():
-            fields["Tax %"] = str(prop.get("number", 7))
+        if prop.get("type") == "number" and prop_name == "Tax Percentage":
+            tax_value = prop.get("number")
+            if tax_value is not None:  # Check if it's actually a value and not None
+                fields["Tax %"] = str(tax_value)
+                print(f"✅ Found Tax Percentage: {tax_value}")
+                tax_found = True
+                break
     
     # Extract Currency
     for prop_name, prop in properties.items():
