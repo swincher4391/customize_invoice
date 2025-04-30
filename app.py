@@ -1036,8 +1036,20 @@ def health_check():
 
 @app.route("/get-etsy-info", methods=["POST"])
 def etsyinfo():
-    return
-    
+    try:
+        # Your Etsy processing code will go here
+        
+        # Return a proper JSON response
+        return jsonify({
+            "status": "success",
+            "message": "Etsy information retrieved successfully"
+        }), 200
+    except Exception as e:
+        # Handle errors gracefully
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
 
 @app.route("/run-processor", methods=["POST"])
 def manual_run():
