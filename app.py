@@ -44,7 +44,7 @@ notion = NotionClient(auth=NOTION_TOKEN)
 # Using OrderedDict to limit memory usage (keeps only most recent 100 events)
 PROCESSED_EVENTS = OrderedDict()
 MAX_CACHE_SIZE = 100
-
+      
 # === BRAND ID GENERATION ===
 def generate_brand_id(business_name, email):
     """Generate a unique Brand ID following these specific rules:
@@ -523,8 +523,8 @@ def extract_notion_properties(page):
     
     return fields
 
-def process_template(fields):
-    """Generate a customized template based on customer fields"""
+def process_template(fields, page_id):
+    """Generate a customized template based on customer fields and Notion page ID"""
     temp_files = []  # List to keep track of temporary files to clean up
     
     try:
@@ -535,22 +535,25 @@ def process_template(fields):
         email = fields.get("Email", "")
         tax_percentage = fields.get("Tax %", "7")
         currency = fields.get("Currency", "USD")
-        logo_url = fields.get("Logo URL", "")
         
-        if not logo_url:
-            logger.error("Logo URL missing!")
-            return None, temp_files
+        # Get logo directly from Notion page
+        logo_bytes = get_logo_from_notion(page_id)
         
-        # Download and process logo
-        logo_response = requests.get(logo_url)
-        if logo_response.status_code != 200:
-            logger.error(f"Failed to download logo from {logo_url}")
-            return None, temp_files
-        
-        processed_logo = remove_background(io.BytesIO(logo_response.content))
-        logo_bytes = io.BytesIO()
-        processed_logo.save(logo_bytes, format="PNG")
-        logo_bytes.seek(0)
+        if not logo_bytes:
+            logger.warning(f"No logo found for {business_name}, proceeding without logo")
+            # Continue with template generation without logo
+        else:
+            # Process the logo to remove background if logo exists
+            try:
+                processed_logo = remove_background(io.BytesIO(logo_bytes))
+                logo_bytes_io = io.BytesIO()
+                processed_logo.save(logo_bytes_io, format="PNG")
+                logo_bytes_io.seek(0)
+                logo_bytes = logo_bytes_io.read()
+            except Exception as e:
+                logger.error(f"Error processing logo: {e}")
+                # Continue with the original logo if processing fails
+                logo_bytes_io = io.BytesIO(logo_bytes)
         
         # Load template and customize
         wb = openpyxl.load_workbook(TEMPLATE_PATH)
@@ -570,10 +573,11 @@ def process_template(fields):
         ws.merge_cells('C32:E32')
         ws['C32'].alignment = Alignment(horizontal='center', vertical='center')
         
-        # Insert logo
-        logo_temp_path = insert_logo(ws, logo_bytes.read())
-        if logo_temp_path:
-            temp_files.append(logo_temp_path)
+        # Insert logo if available
+        if logo_bytes:
+            logo_temp_path = insert_logo(ws, logo_bytes)
+            if logo_temp_path:
+                temp_files.append(logo_temp_path)
         
         # Apply protection
         protect_workbook(wb)
@@ -587,6 +591,52 @@ def process_template(fields):
     except Exception as e:
         logger.error(f"Error processing template: {e}")
         return None, temp_files
+
+def get_logo_from_notion(page_id):
+    """Extract logo image directly from Notion page blocks"""
+    try:
+        blocks = notion.blocks.children.list(block_id=page_id).get("results", [])
+        
+        for block in blocks:
+            if block["type"] == "image":
+                image_block = block["image"]
+                if image_block["type"] == "file":
+                    image_url = image_block["file"]["url"]
+                    try:
+                        response = requests.get(image_url)
+                        if response.status_code == 200:
+                            return response.content
+                    except Exception as e:
+                        logger.error(f"Error downloading logo from Notion URL: {e}")
+                elif image_block["type"] == "external":
+                    image_url = image_block["external"]["url"]
+                    try:
+                        response = requests.get(image_url)
+                        if response.status_code == 200:
+                            return response.content
+                    except Exception as e:
+                        logger.error(f"Error downloading logo from external URL: {e}")
+        
+        # Check for logo in properties
+        page = notion.pages.retrieve(page_id=page_id)
+        if "properties" in page:
+            for prop_name, prop_data in page["properties"].items():
+                if prop_data.get("type") == "files" and prop_data.get("files"):
+                    for file in prop_data["files"]:
+                        if file["type"] == "file":
+                            image_url = file["file"]["url"]
+                            try:
+                                response = requests.get(image_url)
+                                if response.status_code == 200:
+                                    return response.content
+                            except Exception as e:
+                                logger.error(f"Error downloading logo from property: {e}")
+        
+        logger.warning(f"No logo found in page {page_id}")
+        return None
+    except Exception as e:
+        logger.error(f"Error retrieving logo from Notion: {e}")
+        return None
 
 def update_notion_with_brand_id(page_id, brand_id, email_sent=False):
     """Update Notion record with Brand ID and email status"""
@@ -752,20 +802,19 @@ def handle_preview_request():
         email = fields.get('Email', '')
         tax_percentage = fields.get('Tax %', '7')
         currency = fields.get('Currency', 'USD')
-        logo_url = fields.get('Upload your logo', '')
-
-        if not logo_url:
-            return jsonify({"error": "Logo upload missing!"}), 400
-
-        logo_response = requests.get(logo_url)
-        if logo_response.status_code != 200:
-            return jsonify({"error": "Failed to download logo"}), 400
-
-        processed_logo = remove_background(io.BytesIO(logo_response.content))
-        logo_bytes = io.BytesIO()
-        processed_logo.save(logo_bytes, format="PNG")
-        logo_bytes.seek(0)
-
+        
+        #logo_bytes = get
+        if logo_bytes:
+            # Process the logo to remove background
+            processed_logo_bytes = remove_background(logo_bytes)
+            
+            # Insert logo
+            logo_temp_path = insert_logo(ws, processed_logo_bytes)
+            if logo_temp_path:
+                temp_files.append(logo_temp_path)
+        else:
+            logger.warning(f"Skipping logo for {business_name} as no logo was found")
+        
         wb = openpyxl.load_workbook(TEMPLATE_PATH)
         ws = wb.active
 
