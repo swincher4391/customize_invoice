@@ -470,6 +470,7 @@ def protect_workbook(workbook, password='etsysc123'):
         sheet.protection.autoFilter = False
         sheet.protection.pivotTables = False
         sheet.protection.drawings = True  # Specifically protects drawings/images
+        sheet.protection.print = False
 
 def insert_logo(ws, image_bytes):
     """Insert logo into worksheet"""
