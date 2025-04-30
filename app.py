@@ -1034,6 +1034,11 @@ def health_check():
         "timestamp": datetime.now().isoformat()
     })
 
+@app.route("/get-etsy-info", methods=["POST"])
+    def etsyinfo():
+        return
+    
+
 @app.route("/run-processor", methods=["POST"])
 def manual_run():
     """Endpoint to manually trigger the processing job"""
