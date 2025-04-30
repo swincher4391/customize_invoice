@@ -659,7 +659,7 @@ def update_notion_with_brand_id(page_id, brand_id, email_sent=False):
         return False
 
 # === PROCESSING FUNCTION ===
-def process_records_without_brand_id():
+def process_pending_records():
     """
     Main function to scan Notion database for records that need processing:
     - Records without a Brand ID
