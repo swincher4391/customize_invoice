@@ -85,94 +85,86 @@ def generate_brand_id(business_name, email):
     - "Professional Services" → PRSV (P + R + S + V)
     - "AEIOU" → AEIO (just first 4 chars because no consonants)
     - "XYZ Corp" → XYCR (X + Y + C + R)
+    - Handles CamelCase: "JaxMax Designs" → treated as "Jax Max Designs"
     """
-    if not business_name or not isinstance(business_name, str) or business_name.strip() == "":
+    # 0) Fallback defaults
+    if not business_name or not isinstance(business_name, str) or not business_name.strip():
         business_name = "Unknown"
-    
     if not email or not isinstance(email, str):
         email = "example@example.com"
-    
-    # Define vowels for consonant detection
+
+    # 1) Split CamelCase: insert spaces where lowercase→uppercase
+    business_name_for_id = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', business_name)
+
+    # 2) Define vowels for consonant detection
     vowels = ['a', 'e', 'i', 'o', 'u']
-    
-    # Split into words and filter out empty strings
-    words = [word for word in business_name.split() if word]
+
+    # 3) Split into words and filter out empty
+    words = [w for w in business_name_for_id.split() if w]
     if not words:
         words = ["Unknown"]
-    
-    # Check if there are any consonants in the entire name
-    has_consonants = False
-    for char in business_name:
-        if char.isalpha() and char.lower() not in vowels:
-            has_consonants = True
-            break
-    
-    # If no consonants, just take the first 4 characters of the business name
+
+    # 4) Check for any consonants in the split name
+    has_consonants = any(ch.isalpha() and ch.lower() not in vowels for ch in business_name_for_id)
+
+    # 5) Build the 4-char name part
     if not has_consonants:
-        name_part = business_name[:4].upper()
-        # Pad with X, Y, Z if needed
-        if len(name_part) < 4:
-            padding_chars = ['X', 'Y', 'Z']
-            i = 0
-            while len(name_part) < 4:
-                name_part += padding_chars[i % 3]
-                i += 1
+        # no consonants: take first 4 chars of the split name
+        name_part = business_name_for_id[:4].upper()
+        # pad with X,Y,Z as needed
+        padding = ['X', 'Y', 'Z']
+        i = 0
+        while len(name_part) < 4:
+            name_part += padding[i % 3]
+            i += 1
     else:
-        # Initialize result and used letters set
         name_part = ""
         used_letters = set()
-        
-        # Alternate adding initial and first consonant for each word
+        # alternate initial + first unused consonant per word
         for word in words:
             if len(name_part) >= 4:
                 break
-            
-            # Add the initial (first letter)
+
             initial = word[0].upper()
             if initial not in used_letters:
                 name_part += initial
                 used_letters.add(initial)
-            
             if len(name_part) >= 4:
                 break
-                
-            # Find first consonant in the word
+
             consonant_found = False
-            for char in word:
-                if char.isalpha() and char.lower() not in vowels and char.upper() not in used_letters:
-                    name_part += char.upper()
-                    used_letters.add(char.upper())
+            for ch in word:
+                up = ch.upper()
+                if ch.isalpha() and ch.lower() not in vowels and up not in used_letters:
+                    name_part += up
+                    used_letters.add(up)
                     consonant_found = True
                     break
-            
-            # If no unused consonant found, add an unused padding character
+
             if not consonant_found and len(name_part) < 4:
-                for padding_char in ['X', 'Y', 'Z']:
-                    if padding_char not in used_letters:
-                        name_part += padding_char
-                        used_letters.add(padding_char)
+                for pad in ['X', 'Y', 'Z']:
+                    if pad not in used_letters:
+                        name_part += pad
+                        used_letters.add(pad)
                         break
-        
-        # Trim to 4 characters if longer
+
+        # trim or pad to exactly 4
         name_part = name_part[:4]
-        
-        # Pad with unused characters if shorter than 4
-        padding_chars = ['X', 'Y', 'Z']
+        padding = ['X', 'Y', 'Z']
         i = 0
         while len(name_part) < 4:
-            padding_char = padding_chars[i % 3]
-            if padding_char not in used_letters:
-                name_part += padding_char
-                used_letters.add(padding_char)
+            pad = padding[i % 3]
+            if pad not in used_letters:
+                name_part += pad
+                used_letters.add(pad)
             i += 1
-    
-    # Calculate ASCII value of email address
+
+    # 6) Build the email part: ASCII sum → rightmost 4 digits
     email_ascii_sum = sum(ord(c) for c in email)
-    email_part = str(email_ascii_sum)[-4:].zfill(4)  # Get rightmost 4 digits
-    
-    # Construct final Brand ID
+    email_part = str(email_ascii_sum)[-4:].zfill(4)
+
+    # 7) Construct and return
     brand_id = f"BRAND-{name_part}-{email_part}"
-    
     logger.info(f"Generated Brand ID for {business_name}: {brand_id}")
     return brand_id
 
