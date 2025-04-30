@@ -354,7 +354,7 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
                 logger.error(f"❌ All email attempts failed: {e}")
                 return False
 
-def remove_background(image_file, tolerance=50):
+def remove_background(image_file, tolerance=40):
     """Remove background from logo image"""
     img = Image.open(image_file).convert("RGBA")
     datas = img.getdata()
@@ -501,17 +501,6 @@ def insert_watermark_background(ws):
     if os.path.exists("watermark.png"):
         with open("watermark.png", 'rb') as img_file:
             ws._background = img_file.read()
-
-def is_stale_event(event_time, max_age_minutes=5):
-    """Check if an event is too old to process"""
-    try:
-        event_datetime = parser.parse(event_time)
-        current_time = datetime.now(timezone.utc)
-        time_diff = (current_time - event_datetime).total_seconds() / 60
-        return time_diff > max_age_minutes, time_diff
-    except Exception as e:
-        logger.error(f"⚠️ Error parsing event time: {e}")
-        return False, 0  # If we can't parse the time, assume it's not stale
 
 def extract_notion_properties(page):
     """Extract relevant properties from a Notion page"""
@@ -857,172 +846,6 @@ def start_scheduler():
     logger.info(f"Scheduler started, will run every {SCHEDULER_INTERVAL} minutes")
     return scheduler
 
-# === WEBHOOK ===
-@app.route("/preview_webhook", methods=["POST"])
-def handle_preview_request():
-    temp_files = []  # List to keep track of temporary files to clean up
-    event_id = None
-    
-    try:
-        data = request.json
-        logger.info("🚀 Raw incoming data from Tally:", data)
-
-        # Extract event ID and creation time for idempotency check
-        event_id = data.get('eventId')
-        event_time = data.get('createdAt')
-
-        # Check if we've already processed this event SUCCESSFULLY
-        if event_id in PROCESSED_EVENTS and PROCESSED_EVENTS[event_id].get("processed", False):
-            logger.info(f"✅ Skipping already processed event: {event_id}")
-            return '', 204
-        
-        # If we received it before but didn't process it successfully, we'll try again
-        if event_id in PROCESSED_EVENTS:
-            logger.warning(f"⚠️ Retrying previously failed event: {event_id}")
-        
-        # Check if the event is too old (stale)
-        is_stale, time_diff = is_stale_event(event_time)
-        if is_stale:
-            logger.warning(f"⚠️ Skipping stale event from {time_diff:.1f} minutes ago: {event_id}")
-            
-            # Mark as received but not successfully processed
-            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
-                PROCESSED_EVENTS.popitem(last=False)
-            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": False}
-            
-            return '', 204
-
-        # Extract fields from the webhook payload
-        fields_list = data.get('data', {}).get('fields', [])
-        fields = {}
-
-        for field in fields_list:
-            label = field.get('label')
-            value = field.get('value')
-
-            if isinstance(value, list):
-                if value and isinstance(value[0], dict) and 'url' in value[0]:
-                    value = value[0]['url']
-                else:
-                    value = None
-
-            fields[label] = value
-
-        business_name = fields.get('Company Name', 'Your Business')
-        address1 = fields.get('Address', '')
-        address2 = fields.get('City, State ZIP', '')
-        phone = fields.get('Phone', '')
-        email = fields.get('Email', '')
-        tax_percentage = fields.get('Tax %', '7')
-        currency = fields.get('Currency', 'USD')
-        
-        #logo_bytes = get
-        if logo_bytes:
-            # Process the logo to remove background
-            processed_logo_bytes = remove_background(logo_bytes)
-            
-            # Insert logo
-            logo_temp_path = insert_logo(ws, processed_logo_bytes)
-            if logo_temp_path:
-                temp_files.append(logo_temp_path)
-        else:
-            logger.warning(f"Skipping logo for {business_name} as no logo was found")
-        
-        wb = openpyxl.load_workbook(TEMPLATE_PATH)
-        ws = wb.active
-
-        insert_watermark_background(ws)
-
-        ws['A2'] = business_name
-        ws['A3'] = address1
-        ws['A4'] = address2
-        ws['A5'] = phone
-        ws['A6'] = email
-        ws['D30'] = f"Tax ({tax_percentage}%)"
-        ws['E30'] = f'=IF(NOT(IsGoogleSheets),E29*{float(tax_percentage)}/100,"GOOGLE SHEETS DETECTED")'
-        ws['C32'] = f"All amounts shown in {currency}"
-        ws.merge_cells('C32:E32')
-        ws['C32'].alignment = Alignment(horizontal='center', vertical='center')
-
-        # Insert logo and get the temp file path
-        logo_temp_path = insert_logo(ws, logo_bytes.read())
-        if logo_temp_path:
-            temp_files.append(logo_temp_path)
-
-        protect_workbook(wb)
-
-        # Save the workbook to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-            wb.save(tmp.name)
-            temp_files.append(tmp.name)  # Add to cleanup list
-
-        # Generate a Brand ID for the customer
-        brand_id = generate_brand_id(business_name, email)
-        fields['BrandID'] = brand_id
-
-        # Update Notion database with fields and Brand ID
-        notion_page_id = update_notion_database(fields=fields)
-
-        # Send the email
-        try:
-            send_email(
-                recipient_email=email,
-                subject="Your Custom Invoice Template & Brand ID",
-                body="Please find attached your custom Excel invoice template. You can fill in the item details and the calculations will be performed automatically.",
-                attachment_paths=[tmp.name],
-                business_name=business_name,
-                brand_id=brand_id
-            )
-            
-            # Mark this event as successfully processed
-            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
-                PROCESSED_EVENTS.popitem(last=False)
-            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": True}
-            
-            logger.info(f"✅ Successfully processed event: {event_id}")
-            # Then after successfully sending the email, update the Email Sent field
-            if notion_page_id:
-                try:
-                    notion.pages.update(
-                        page_id=notion_page_id,
-                        properties={
-                            "Email Sent": {"checkbox": True}
-                        }
-                    )
-                    logger.info(f"✅ Updated Email Sent status in Notion")
-                except Exception as e:
-                    logger.error(f"⚠️ Error updating Email Sent status: {e}")
-        except Exception as e:
-            # Mark as received but not successfully processed
-            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
-                PROCESSED_EVENTS.popitem(last=False)
-            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": False}
-            
-            logger.error(f"⚠️ Failed to send email: {e}")
-            return jsonify({"error": "Failed to send email"}), 500
-
-        return '', 204
-        
-    except Exception as e:
-        # Mark the event as received but not processed if we have an event_id
-        if event_id:
-            if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
-                PROCESSED_EVENTS.popitem(last=False)
-            PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": False}
-        
-        logger.error(f"⚠️ Unhandled error: {e}")
-        return jsonify({"error": str(e)}), 500
-        
-    finally:
-        # Clean up all temporary files
-        for file_path in temp_files:
-            try:
-                if file_path and os.path.exists(file_path):
-                    os.unlink(file_path)
-                    logger.info(f"✅ Removed temporary file: {file_path}")
-            except Exception as e:
-                logger.error(f"⚠️ Error removing temporary file {file_path}: {e}")
-
 # === ROUTES ===
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -1072,7 +895,7 @@ def index():
     return jsonify({
       "service": "BrandIDProcessor",
       "status": "running",
-      "endpoints": ["/health", "/run-processor", "/preview_webhook"]
+      "endpoints": ["/health", "/run-processor"]
     }), 200
 # === MAIN ===
 if __name__ == "__main__":
