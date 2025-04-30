@@ -66,16 +66,58 @@ def get_property_value(properties, name, type_name):
     
     return ""
       
+# Define a list of words to ignore in the brand ID generation
+IGNORE_WORDS = {
+    # Articles
+    'a', 'an', 'the',
+    
+    # Conjunctions
+    'and', 'but', 'or', 'nor', 'for', 'yet', 'so',
+    
+    # Prepositions
+    'in', 'on', 'at', 'by', 'for', 'with', 'about', 'against', 'between',
+    'into', 'through', 'during', 'before', 'after', 'above', 'below',
+    'to', 'from', 'up', 'down', 'of', 'off',
+    
+    # Common short words
+    'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did',
+    'if', 'then', 'else', 'when', 'where', 'why', 'how',
+    'all', 'any', 'both', 'each', 'few', 'more', 'most', 'some',
+    'as', 'per',
+    
+    # Business words to ignore
+    'inc', 'incorporated', 'llc', 'ltd', 'limited',
+    'corp', 'corporation', 'co', 'company',
+    'group', 'holdings', 'enterprises', 'partners',
+    'services', 'solutions', 'systems',
+    
+    # Common business descriptors
+    'global', 'international', 'national', 'regional', 'local',
+    'worldwide', 'enterprise', 'business',
+    
+    # Common suffixes
+    'ing', 'ed', 'ly'
+}
+
 def generate_brand_id(business_name, email=None):
     """Generate a unique Brand ID following these specific rules:
     
     Format: BRAND-{4-char name code}-{4-digit email code}
     
-    Name code algorithm (fixed to handle JaxMax Designs case):
-    1. Split CamelCase into separate words first (JaxMax → Jax Max)
-    2. Take first letter of each word (J, M, D)
-    3. Add first consonant from the first word (X from Jax)
-    4. Result should be JXMD for JaxMax Designs, HIMC for HereIsMyCompany
+    Name code algorithm with specific sequence:
+    1. Split CamelCase into separate words (JaxMax → Jax Max)
+    2. Split by spaces and other separators
+    3. THEN filter out common words (articles, prepositions, etc.)
+    4. Take first letter of the first important word
+    5. Take first consonant from the first important word
+    6. Add first letters of remaining important words
+    7. Fill in with consonants if needed
+    
+    Examples:
+    - "JaxMax Designs" → JXMD (J + X + M + D)
+    - "HereIsMyCompany" → HIMC (H + I + M + C, ignoring "Is")
+    - "The Acme Design Studio" → ACDS (ignoring "The")
     """
     # Fallback defaults
     if not business_name or not isinstance(business_name, str) or not business_name.strip():
@@ -83,61 +125,67 @@ def generate_brand_id(business_name, email=None):
     if not email or not isinstance(email, str):
         email = "example@example.com"
     
-    # Split CamelCase by inserting spaces at lowercase→uppercase boundaries
+    # STEP 1: Split CamelCase by inserting spaces at lowercase→uppercase boundaries
     business_name_with_spaces = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', business_name)
     logger.info(f"After CamelCase splitting: '{business_name_with_spaces}'")
+    
+    # STEP 2: Split into words by spaces and other separators
+    all_words = [w for w in re.split(r'[^a-zA-Z0-9]+', business_name_with_spaces) if w]
+    if not all_words:
+        all_words = ["Unknown"]
+    
+    logger.info(f"All words after splitting: {all_words}")
+    
+    # STEP 3: Filter out ignore words (case insensitive)
+    important_words = []
+    for word in all_words:
+        if word.lower() not in IGNORE_WORDS:
+            important_words.append(word)
+    
+    # If all words were filtered out, use original words
+    if not important_words:
+        important_words = all_words
+    
+    logger.info(f"Important words after filtering: {important_words}")
     
     # Define vowels for consonant detection
     vowels = set('aeiouAEIOU')
     
-    # Split into words and filter out empty strings
-    words = [w for w in re.split(r'[^a-zA-Z0-9]+', business_name_with_spaces) if w]
-    if not words:
-        words = ["Unknown"]
-    
-    logger.info(f"Split words: {words}")
-    
-    # Get first letter of each word
-    initials = [word[0].upper() for word in words]
-    logger.info(f"Initials: {initials}")
-    
-    # For "JaxMax Designs" special case: we need to get J, X, M, D
-    # For first word, find first consonant after first letter
-    first_consonant = None
-    if len(words) > 0 and len(words[0]) > 1:
-        for ch in words[0][1:]:
-            if ch.isalpha() and ch.upper() not in vowels:
-                first_consonant = ch.upper()
-                break
-    
-    logger.info(f"First consonant from first word: {first_consonant}")
-    
-    # Build the name part: First letter of first word, then first consonant of first word,
-    # then first letters of remaining words
+    # STEP 4-6: Generate the brand ID from important words
     name_part = ""
     used_letters = set()
     
-    # Add first initial
-    if initials and initials[0] not in used_letters:
-        name_part += initials[0]
-        used_letters.add(initials[0])
+    # STEP 4: Get first letter of first important word
+    if important_words:
+        first_initial = important_words[0][0].upper()
+        name_part += first_initial
+        used_letters.add(first_initial)
+        
+        # STEP 5: Find first consonant from first important word
+        first_consonant = None
+        if len(important_words[0]) > 1:
+            for ch in important_words[0][1:]:
+                if ch.isalpha() and ch.upper() not in vowels and ch.upper() not in used_letters:
+                    first_consonant = ch.upper()
+                    break
+        
+        if first_consonant:
+            name_part += first_consonant
+            used_letters.add(first_consonant)
     
-    # Add first consonant from first word
-    if first_consonant and first_consonant not in used_letters:
-        name_part += first_consonant
-        used_letters.add(first_consonant)
-    
-    # Add remaining initials
-    for initial in initials[1:]:
+    # STEP 6: Add first letters of remaining important words
+    for word in important_words[1:]:
         if len(name_part) >= 4:
             break
+        
+        initial = word[0].upper()
         if initial not in used_letters:
             name_part += initial
             used_letters.add(initial)
     
-    # If we still need more characters, add consonants from other words
+    # STEP 7: If still not 4 chars, add additional consonants from words
     if len(name_part) < 4:
-        for word in words[1:]:  # Skip the first word, we already used its consonant
+        for word in important_words[1:]:  # Skip the first word, we already used its consonant
             if len(name_part) >= 4:
                 break
             if len(word) > 1:
