@@ -17,6 +17,7 @@ from dateutil import parser
 import uuid
 import logging
 from apscheduler.schedulers.background import BackgroundScheduler
+import re
 
 # Set up logging
 logging.basicConfig(
