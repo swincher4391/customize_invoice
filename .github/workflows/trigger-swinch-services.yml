@@ -1,0 +1,27 @@
+name: Trigger Swinch Services
+
+on:
+  schedule:
+    # Run every 5 minutes
+    - cron: '*/5 * * * *'
+  # Allow manual triggering for testing
+  workflow_dispatch:
+
+jobs:
+  trigger-services:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v2
+      
+      - name: Trigger Brand ID Processing
+        run: |
+          curl -X POST "https://swinch.onrender.com/run-processor"
+      
+      - name: Trigger Etsy Info Processing
+        run: |
+          curl -X POST "https://swinch.onrender.com/get-etsy-info"
+          
+      - name: Log completion time
+        run: echo "Services triggered at $(date)"
