@@ -329,7 +329,7 @@ def update_notion_database(fields, event_id=None):
             "Email": {"email": email},
             "Timestamp": {"date": {"start": timestamp}},
             "Validated": {"checkbox": True},
-            "Excel Sent": {"checkbox": False}  # Will be updated to True when email is sent
+            "Email Sent": {"checkbox": False}  # Will be updated to True when email is sent
         }
         
         # Add Brand ID to properties
@@ -646,7 +646,7 @@ def update_notion_with_brand_id(page_id, brand_id, email_sent=False):
         }
         
         if email_sent:
-            properties["Excel Sent"] = {"checkbox": True}
+            properties["Email Sent"] = {"checkbox": True}
         
         notion.pages.update(
             page_id=page_id,
@@ -659,76 +659,151 @@ def update_notion_with_brand_id(page_id, brand_id, email_sent=False):
         return False
 
 # === PROCESSING FUNCTION ===
-def process_pending_records():
-    """Process all Notion records that don't have a Brand ID yet"""
-    logger.info("Starting to process pending records...")
+def process_records_without_brand_id():
+    """
+    Main function to scan Notion database for records that need processing:
+    - Records without a Brand ID
+    - Records with a Brand ID but where email wasn't sent successfully
+    """
+    logger.info("Scanning for records that need processing...")
+    
+    if not NOTION_TOKEN or not DATABASE_ID:
+        logger.error("Notion credentials not set, cannot process records")
+        return
     
     try:
-        # Query for records without BrandID
+        # Query Notion for records that either:
+        # 1. Don't have a Brand ID, OR
+        # 2. Have a Brand ID but email wasn't sent (Email Sent is false)
         results = notion.databases.query(
             database_id=DATABASE_ID,
             filter={
-                "property": "BrandID",
-                "rich_text": {
-                    "is_empty": True
-                }
+                "or": [
+                    {
+                        "property": "BrandID", 
+                        "rich_text": {
+                            "is_empty": True
+                        }
+                    },
+                    {
+                        "and": [
+                            {
+                                "property": "BrandID",
+                                "rich_text": {
+                                    "is_not_empty": True
+                                }
+                            },
+                            {
+                                "property": "Email Sent",
+                                "checkbox": {
+                                    "equals": False
+                                }
+                            }
+                        ]
+                    }
+                ]
             }
         ).get("results", [])
         
-        logger.info(f"Found {len(results)} records without a Brand ID")
+        logger.info(f"Found {len(results)} records that need processing")
         
-        for page in results:
-            page_id = page["id"]
-            logger.info(f"Processing page {page_id}")
-            
-            # Extract fields from the Notion page
-            fields = extract_notion_properties(page)
-            business_name = fields.get("Company Name", "Unknown Business")
-            email = fields.get("Email")
-            
-            if not email:
-                logger.warning(f"No email found for page {page_id}, skipping")
-                continue
-            
-            # Generate Brand ID
-            brand_id = generate_brand_id(business_name, email)
-            fields["BrandID"] = brand_id
-            logger.info(f"Generated Brand ID {brand_id} for {business_name}")
-            
-            # Process template
-            template_path, temp_files = process_template(fields)
-            if not template_path:
-                logger.error(f"Failed to generate template for {business_name}")
-                continue
-            
-            # Send email
-            email_success = send_email(
-                recipient_email=email,
-                subject="Your Custom Invoice Template & Brand ID",
-                body=f"Please find attached your custom Excel invoice template. Your Brand ID is: {brand_id}. Please save this ID for future template purchases.",
-                attachment_paths=[template_path],
-                business_name=business_name,
-                brand_id=brand_id
-            )
-            
-            # Update Notion record
-            update_notion_with_brand_id(page_id, brand_id, email_success)
-            
-            # Clean up temporary files
-            for file_path in temp_files:
+        # Process each record
+        processed_count = 0
+        for record in results:
+            try:
+                page_id = record["id"]
+                properties = record["properties"]
+                
+                # Extract business information
+                business_name = get_property_value(properties, "Company", "title") or get_property_value(properties, "Name", "title")
+                email = get_property_value(properties, "Email", "email")
+                phone = get_property_value(properties, "Phone", "phone_number") 
+                address = get_property_value(properties, "Address", "rich_text")
+                city_state_zip = get_property_value(properties, "City, State ZIP", "rich_text") or get_property_value(properties, "City/State/ZIP", "rich_text")
+                
+                if not business_name or not email:
+                    logger.warning(f"Skipping record {page_id}: Missing required fields (business name or email)")
+                    continue
+                
+                # Check if record already has a Brand ID
+                existing_brand_id = get_property_value(properties, "BrandID", "rich_text")
+                
+                # Generate or use existing Brand ID
+                if existing_brand_id:
+                    brand_id = existing_brand_id
+                    logger.info(f"Using existing Brand ID {brand_id} for {business_name}")
+                else:
+                    brand_id = generate_brand_id(business_name)
+                    logger.info(f"Generated Brand ID {brand_id} for {business_name}")
+                
+                # Collect business data for invoice generation
+                fields = {
+                    "Company Name": business_name,
+                    "Address": address,
+                    "City, State ZIP": city_state_zip,
+                    "Phone": phone,
+                    "Email": email,
+                    "Tax %": "7",  # Default
+                    "Currency": "USD"  # Default
+                }
+                
+                # Generate invoice preview
+                invoice_path, temp_files = process_template(fields, page_id)
+                
+                # Clean up temp files at the end
                 try:
-                    if file_path and os.path.exists(file_path):
-                        os.unlink(file_path)
-                except Exception as e:
-                    logger.warning(f"Failed to remove temporary file {file_path}: {e}")
-                    
-            # Add a small delay between processing records to avoid rate limits
-            time.sleep(1)
+                    if invoice_path:
+                        # Send email with Brand ID and preview
+                        email_sent = send_email(
+                            recipient_email=email,
+                            subject="Your Custom Invoice Template & Brand ID",
+                            body=brand_id,
+                            attachment_paths=[invoice_path],
+                            business_name=business_name
+                        )
+                        
+                        # Update Notion with Brand ID if email was sent
+                        if email_sent:
+                            notion.pages.update(
+                                page_id=page_id,
+                                properties={
+                                    "BrandID": {
+                                        "rich_text": [
+                                            {
+                                                "text": {
+                                                    "content": brand_id
+                                                }
+                                            }
+                                        ]
+                                    },
+                                    "Email Sent": {
+                                        "checkbox": True
+                                    }
+                                }
+                            )
+                            processed_count += 1
+                            logger.info(f"Successfully processed {business_name} with Brand ID: {brand_id}")
+                    else:
+                        logger.error(f"Failed to generate template for {business_name}")
+                finally:
+                    # Clean up temporary files
+                    for file_path in temp_files:
+                        if file_path and os.path.exists(file_path):
+                            os.unlink(file_path)
+                
+                # Small delay to avoid rate limits
+                time.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"Error processing record {page_id if 'page_id' in locals() else 'unknown'}: {e}")
+                continue
         
-        logger.info("Finished processing pending records")
-    
+        logger.info(f"Successfully processed {processed_count} out of {len(results)} records")
+        return processed_count
+        
     except Exception as e:
-        logger.error(f"Error in process_pending_records: {e}")
+        logger.error(f"Error querying Notion database: {e}")
+        return 0
 
 # === SCHEDULER ===
 def start_scheduler():
@@ -867,18 +942,18 @@ def handle_preview_request():
             PROCESSED_EVENTS[event_id] = {"timestamp": time.time(), "processed": True}
             
             logger.info(f"✅ Successfully processed event: {event_id}")
-            # Then after successfully sending the email, update the Excel Sent field
+            # Then after successfully sending the email, update the Email Sent field
             if notion_page_id:
                 try:
                     notion.pages.update(
                         page_id=notion_page_id,
                         properties={
-                            "Excel Sent": {"checkbox": True}
+                            "Email Sent": {"checkbox": True}
                         }
                     )
-                    logger.info(f"✅ Updated Excel Sent status in Notion")
+                    logger.info(f"✅ Updated Email Sent status in Notion")
                 except Exception as e:
-                    logger.error(f"⚠️ Error updating Excel Sent status: {e}")
+                    logger.error(f"⚠️ Error updating Email Sent status: {e}")
         except Exception as e:
             # Mark as received but not successfully processed
             if len(PROCESSED_EVENTS) >= MAX_CACHE_SIZE:
