@@ -996,7 +996,7 @@ def health_check():
         "timestamp": datetime.now().isoformat()
     })
 
-@app.route("/run-processor", methods=["POST"])
+@app.route("/run-processor", methods=["POST","GET"])
 def manual_run():
     """Endpoint to manually trigger the processing job"""
     try:
