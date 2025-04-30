@@ -1035,8 +1035,8 @@ def health_check():
     })
 
 @app.route("/get-etsy-info", methods=["POST"])
-    def etsyinfo():
-        return
+def etsyinfo():
+    return
     
 
 @app.route("/run-processor", methods=["POST"])
