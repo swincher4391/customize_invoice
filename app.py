@@ -735,11 +735,12 @@ def process_pending_records():
                 properties = record["properties"]
                 
                 # Extract business information
-                business_name = get_property_value(properties, "Company", "title") or get_property_value(properties, "Name", "title")
+                business_name =  get_property_value(properties, "Company", "title")
                 email = get_property_value(properties, "Email", "email")
                 phone = get_property_value(properties, "Phone", "phone_number") 
                 address = get_property_value(properties, "Address", "rich_text")
-                city_state_zip = get_property_value(properties, "City, State ZIP", "rich_text") or get_property_value(properties, "City/State/ZIP", "rich_text")
+                city_state_zip = get_property_value(properties, "CityStateZip", "rich_text")
+                tax_percentage = get_property_value(properties, "Tax Percentage", "number") or "7"
                 
                 if not business_name or not email:
                     logger.warning(f"Skipping record {page_id}: Missing required fields (business name or email)")
