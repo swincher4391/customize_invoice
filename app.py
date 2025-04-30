@@ -44,6 +44,26 @@ notion = NotionClient(auth=NOTION_TOKEN)
 # Using OrderedDict to limit memory usage (keeps only most recent 100 events)
 PROCESSED_EVENTS = OrderedDict()
 MAX_CACHE_SIZE = 100
+
+def get_property_value(properties, name, type_name):
+    """Extract values from Notion property objects"""
+    if name not in properties:
+        return ""
+        
+    prop = properties[name]
+    
+    if type_name == "title" and "title" in prop:
+        return prop["title"][0]["plain_text"] if prop["title"] else ""
+    elif type_name == "rich_text" and "rich_text" in prop:
+        return prop["rich_text"][0]["plain_text"] if prop["rich_text"] else ""
+    elif type_name == "email":
+        return prop.get("email", "")
+    elif type_name == "phone_number":
+        return prop.get("phone_number", "")
+    elif type_name == "checkbox":
+        return prop.get("checkbox", False)
+    
+    return ""
       
 # === BRAND ID GENERATION ===
 def generate_brand_id(business_name, email):
