@@ -358,7 +358,7 @@ def send_email(recipient_email, subject, body, attachment_paths, business_name='
                 logger.error(f"❌ All email attempts failed: {e}")
                 return False
 
-def remove_background(image_file, tolerance=40):
+def remove_background(image_file, tolerance=30):
     """Remove background from logo image"""
     img = Image.open(image_file).convert("RGBA")
     datas = img.getdata()
