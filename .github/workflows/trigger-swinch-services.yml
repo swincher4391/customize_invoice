@@ -3,7 +3,7 @@ name: Trigger Swinch Services
 on:
   schedule:
     # Run every 5 minutes
-    - cron: '*/5 * * * *'
+    - cron: "2/5 * * * *"
   # Allow manual triggering for testing
   workflow_dispatch:
 
