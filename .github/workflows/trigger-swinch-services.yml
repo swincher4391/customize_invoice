@@ -18,10 +18,6 @@ jobs:
       - name: Trigger Brand ID Processing
         run: |
           curl -X POST "https://swinch.onrender.com/run-processor"
-      
-      - name: Trigger Etsy Info Processing
-        run: |
-          curl -X POST "https://swinch.onrender.com/get-etsy-info"
           
       - name: Log completion time
         run: echo "Services triggered at $(date)"
